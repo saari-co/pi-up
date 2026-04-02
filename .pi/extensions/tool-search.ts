@@ -214,24 +214,20 @@ export default function toolSearch(pi: ExtensionAPI) {
 		description: "Show deferred vs active tools",
 		handler: async (_args, ctx) => {
 			try {
+				if (!initialized) initDeferred();
+
+				// getActiveTools() returns string[], not objects
+				const active = pi.getActiveTools() as unknown as string[];
+				const activeSet = new Set(active);
 				const all = pi.getAllTools();
-				const active = pi.getActiveTools();
-
-				// Debug: dump first tool object keys and values
-				const sample = active[0] || all[0];
-				const keys = sample ? Object.keys(sample).join(", ") : "(no tools)";
-				const dump = sample ? JSON.stringify(sample, null, 0).slice(0, 300) : "null";
-
-				const allNames = all.map((t: any) => t.name).filter(Boolean);
-				const activeByName = active.map((t: any) => t.name).filter(Boolean);
+				const allNames = all.map((t) => t.name);
+				const deferred = allNames.filter((n) => !activeSet.has(n));
 
 				const msg = [
-					"[tool-search debug]",
-					"keys on tool obj: " + keys,
-					"sample: " + dump,
-					"all count: " + all.length + " names: " + allNames.join(", "),
-					"active count: " + active.length + " names: " + activeByName.join(", "),
-					"initialized: " + initialized,
+					"[ToolSearch Status]",
+					"Active (" + active.length + "): " + active.join(", "),
+					"Deferred (" + deferred.length + "): " + (deferred.join(", ") || "(none)"),
+					"Total: " + allNames.length,
 				].join("\n");
 
 				pi.sendUserMessage(msg, { deliverAs: "followUp" });
