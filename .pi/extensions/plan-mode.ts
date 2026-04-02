@@ -413,6 +413,16 @@ After completing a step, include a [DONE:n] tag in your response.`,
 
 		if (!planModeEnabled || !ctx.hasUI) return;
 
+		// Don't extract new plans if we just finished executing one
+		if (executionMode && todoItems.length > 0 && todoItems.every((t) => t.completed)) {
+			executionMode = false;
+			todoItems = [];
+			pi.setActiveTools(NORMAL_MODE_TOOLS);
+			updateStatus(ctx);
+			persistState();
+			return;
+		}
+
 		// Extract todos from last assistant message
 		const lastAssistant = [...event.messages].reverse().find(isAssistantMessage);
 		if (lastAssistant) {
