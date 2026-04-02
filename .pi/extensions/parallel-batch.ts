@@ -252,7 +252,8 @@ async function runWorker(
 		usage: { input: 0, output: 0, cost: 0, turns: 0 },
 	};
 
-	const args: string[] = ["--mode", "json", "-p", "--no-session"];
+	const batchModel = process.env.PI_BATCH_MODEL || "gemini-2.5-flash";
+	const args: string[] = ["--model", batchModel, "--mode", "json", "-p", "--no-session"];
 	if (sessionFile) {
 		args.push("--fork", sessionFile);
 	}
@@ -268,7 +269,7 @@ async function runWorker(
 				...process.env, 
 				PI_IS_SUBAGENT: "true", 
 				PI_SUBAGENT_DEPTH: ((parseInt(process.env.PI_SUBAGENT_DEPTH || "0", 10)) + 1).toString(),
-				PI_MODEL: process.env.PI_BATCH_MODEL || "gemini-2.5-flash",
+
 				// 🛡️ Subagent Sandboxing: Lock this worker to only the files it was assigned
 				PI_ALLOWED_PATHS: unit.files.join(",")
 			}, // Mark as sub-agent and use cheaper model

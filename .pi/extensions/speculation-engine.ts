@@ -164,6 +164,7 @@ export default function speculationEngine(pi: ExtensionAPI) {
 			// Use cheaper model for speculation (Claude Code uses CLAUDE_CODE_SUBAGENT_MODEL)
 			// Defaults to gemini-flash, override with PI_SPECULATION_MODEL env var
 			const speculationModel = process.env.PI_SPECULATION_MODEL || "gemini-2.5-flash";
+			spawnArgs.unshift("--model", speculationModel);
 
 			const proc = spawn(process.argv[0], [process.argv[1]!, ...spawnArgs], {
 				env: {
@@ -173,7 +174,6 @@ export default function speculationEngine(pi: ExtensionAPI) {
 					PI_SUBAGENT_DEPTH: (currentDepth + 1).toString(),
 					PI_SPECULATION_OVERLAY_ID: overlay.id,
 					PI_SPECULATION_OVERLAY_ROOT: overlay.root,
-					PI_MODEL: speculationModel,
 				},
 				stdio: ["ignore", "pipe", "pipe"],
 			});
