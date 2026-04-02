@@ -70,13 +70,29 @@ function analyzeSession(ctx: ExtensionContext): SessionStats {
 	};
 
 	let turnCount = 0;
-	let firstTimestamp = Infinity;
+	let firstTimestamp = 0;
 	let lastTimestamp = 0;
 
+	// First pass: build a map of toolCallId -> args from assistant tool_use blocks
+	const toolArgsMap = new Map<string, Record<string, any>>();
 	for (const entry of entries) {
-		if (entry.timestamp) {
-			firstTimestamp = Math.min(firstTimestamp, entry.timestamp);
-			lastTimestamp = Math.max(lastTimestamp, entry.timestamp);
+		if (entry.type !== "message") continue;
+		const msg = entry.message;
+		if (msg.role === "assistant" && Array.isArray(msg.content)) {
+			for (const block of msg.content) {
+				if (block.type === "toolCall" && block.id) {
+					toolArgsMap.set(block.id, (block as any).arguments || {});
+				}
+			}
+		}
+	}
+
+	// Second pass: walk entries and extract milestones
+	for (const entry of entries) {
+		const ts = entry.timestamp;
+		if (ts && ts > 0) {
+			if (!firstTimestamp) firstTimestamp = ts;
+			lastTimestamp = ts;
 		}
 
 		if (entry.type !== "message") continue;
@@ -89,14 +105,14 @@ function analyzeSession(ctx: ExtensionContext): SessionStats {
 				if (typeof msg.content === "string") text = msg.content;
 				else if (Array.isArray(msg.content)) {
 					for (const block of msg.content) {
-						if (block.type === "text") { text = block.text; break; }
+						if (block.type === "text") { text = (block as any).text; break; }
 					}
 				}
 				if (text) {
 					stats.milestones.push({
 						turn: turnCount, type: "start",
 						label: text.slice(0, 70) + (text.length > 70 ? "..." : ""),
-						timestamp: entry.timestamp || Date.now(),
+						timestamp: ts || Date.now(),
 					});
 				}
 			}
@@ -104,36 +120,38 @@ function analyzeSession(ctx: ExtensionContext): SessionStats {
 
 		if (msg.role === "toolResult") {
 			const toolName = msg.toolName;
-			const path = msg.toolCallArgs?.path as string | undefined;
+			// Get args from the assistant's toolCall block (not from toolResult)
+			const args = toolArgsMap.get(msg.toolCallId || "") || {};
+			const filePath = (args.path || args.file_path || "") as string;
 
-			if (toolName === "read" && path) {
-				if (!stats.filesRead.has(path)) {
-					stats.filesRead.add(path);
+			if (toolName === "read" && filePath) {
+				if (!stats.filesRead.has(filePath)) {
+					stats.filesRead.add(filePath);
 					if (stats.filesRead.size <= 8) {
 						stats.milestones.push({
 							turn: turnCount, type: "file_read",
-							label: "Read " + shortenPath(path),
-							timestamp: entry.timestamp || Date.now(),
+							label: "Read " + shortenPath(filePath),
+							timestamp: ts || Date.now(),
 						});
 					}
 				}
-			} else if (toolName === "write" && path) {
-				stats.filesWritten.add(path);
+			} else if (toolName === "write" && filePath) {
+				stats.filesWritten.add(filePath);
 				stats.milestones.push({
 					turn: turnCount, type: "file_write",
-					label: "Created " + shortenPath(path),
-					timestamp: entry.timestamp || Date.now(),
+					label: "Created " + shortenPath(filePath),
+					timestamp: ts || Date.now(),
 				});
-			} else if (toolName === "edit" && path) {
-				stats.filesEdited.add(path);
+			} else if (toolName === "edit" && filePath) {
+				stats.filesEdited.add(filePath);
 				stats.milestones.push({
 					turn: turnCount, type: "file_edit",
-					label: "Edited " + shortenPath(path),
-					timestamp: entry.timestamp || Date.now(),
+					label: "Edited " + shortenPath(filePath),
+					timestamp: ts || Date.now(),
 				});
 			} else if (toolName === "bash") {
 				stats.bashCommands++;
-				const command = msg.toolCallArgs?.command as string | undefined;
+				const command = (args.command || "") as string;
 				if (command) {
 					const shortCmd = command.split("\n")[0].slice(0, 50);
 					if (stats.bashCommands <= 5 ||
@@ -143,7 +161,7 @@ function analyzeSession(ctx: ExtensionContext): SessionStats {
 						stats.milestones.push({
 							turn: turnCount, type: "bash",
 							label: "$ " + shortCmd,
-							timestamp: entry.timestamp || Date.now(),
+							timestamp: ts || Date.now(),
 						});
 					}
 				}
@@ -153,7 +171,7 @@ function analyzeSession(ctx: ExtensionContext): SessionStats {
 						turn: turnCount, type: "error",
 						label: "Hit an error",
 						detail: getTextContent(msg).slice(0, 50),
-						timestamp: entry.timestamp || Date.now(),
+						timestamp: ts || Date.now(),
 					});
 				}
 			}
@@ -162,14 +180,14 @@ function analyzeSession(ctx: ExtensionContext): SessionStats {
 		if (msg.role === "assistant" && Array.isArray(msg.content)) {
 			for (const block of msg.content) {
 				if (block.type !== "text") continue;
-				const text = block.text;
-				if (text.includes("##") && stats.milestones.length < 30) {
+				const text = (block as any).text as string;
+				if (text && text.includes("##") && stats.milestones.length < 30) {
 					const heading = text.match(/^##\s+(.{5,50})/m);
 					if (heading && !heading[1].includes("```")) {
 						stats.milestones.push({
 							turn: turnCount, type: "decision",
 							label: heading[1].trim(),
-							timestamp: entry.timestamp || Date.now(),
+							timestamp: ts || Date.now(),
 						});
 					}
 				}
@@ -178,7 +196,7 @@ function analyzeSession(ctx: ExtensionContext): SessionStats {
 	}
 
 	stats.turns = turnCount;
-	stats.startTime = firstTimestamp === Infinity ? Date.now() : firstTimestamp;
+	stats.startTime = firstTimestamp || Date.now();
 	stats.endTime = lastTimestamp || Date.now();
 
 	if (stats.milestones.length > 0) {
