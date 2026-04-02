@@ -16,7 +16,7 @@ A workspace that transforms pi (coding agent by @mariozechner) into a Claude Cod
 - IDEAS.md tracks feature roadmap (36 features, 29 built — ToolSearch added)
 
 ## Key custom infrastructure
-- `parallel-batch.ts` — spawns parallel pi subagent workers in isolated git worktrees
+- `parallel-batch.ts` — spawns parallel pi subagent workers in isolated git worktrees. Uses Prompt Cache Inheritance (Zero-Cost Spawns) by passing a stripped session file to workers via `--fork`.
 - `custom-compaction.ts` — 9-section structured compaction (Claude Code pattern)
 - `todo-tool.ts` — LLM-driven task management tool
 - `plan-mode.ts` — read-only exploration then tracked execution
