@@ -38,7 +38,7 @@ const MAX_RECENT_MESSAGES = 30;
 
 let extractionInProgress = false;
 
-async function runInProcessExtraction(prompt: string, memDir: string): Promise<void> {
+async function runInProcessExtraction(prompt: string, memDir: string, ctx?: any): Promise<void> {
 	if (extractionInProgress) return; // Coalesce: skip if already running
 	extractionInProgress = true;
 
@@ -60,7 +60,8 @@ async function runInProcessExtraction(prompt: string, memDir: string): Promise<v
 
 		let responseText = "";
 		try {
-			const stream = streamSimple(undefined as any, context);
+			const model = ctx?.getModel?.() || undefined;
+			const stream = streamSimple(model, context);
 			for await (const event of stream) {
 				if (controller.signal.aborted) break;
 				if (event.type === "text_delta") {
@@ -80,12 +81,19 @@ async function runInProcessExtraction(prompt: string, memDir: string): Promise<v
 
 		// Parse the response for memory file writes
 		// The LLM responds with markdown content to save
-		if (responseText && !responseText.includes("No new memories")) {
+		if (!responseText || responseText.includes("No new memories") || responseText.includes("no memories")) {
+			fs.appendFileSync("/tmp/pi-auto-dream.log",
+				`${new Date().toISOString()} SKIP: no memories to save (${responseText.length} chars)\n`);
+		} else {
 			// Write the extracted memories to a timestamped file
 			const timestamp = new Date().toISOString().replace(/[:.]/g, "-");
 			const memFile = path.join(memDir, `auto-${timestamp}.md`);
 			fs.writeFileSync(memFile, responseText.trim());
+			// Verification log
+			fs.appendFileSync("/tmp/pi-auto-dream.log",
+				`${new Date().toISOString()} OK: saved ${responseText.length} chars to ${memFile}\n`);
 		}
+		// Close the if/else
 	} catch (err) {
 		// Best-effort: log but don't crash
 		try {
@@ -307,7 +315,7 @@ export default function autoDream(pi: ExtensionAPI) {
 		const prompt = buildExtractionPrompt(recentText, memDir, manifest);
 
 		// In-process extraction — no subprocess, no cold start
-		runInProcessExtraction(prompt, memDir);
+		runInProcessExtraction(prompt, memDir, ctx);
 	});
 
 	// On session start, check if full consolidation is needed
@@ -350,7 +358,7 @@ export default function autoDream(pi: ExtensionAPI) {
 			const memDir = ensureMemoryDir(ctx.cwd);
 			const prompt = buildConsolidationPrompt(memDir, sessionDir);
 
-			runInProcessExtraction(prompt, memDir).then(() => {
+			runInProcessExtraction(prompt, memDir, ctx).then(() => {
 				writeTimestamp(ctx.cwd);
 				ctx.ui.notify("Dream: Background consolidation complete.", "success");
 			});
