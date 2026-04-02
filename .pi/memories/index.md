@@ -1,6 +1,6 @@
 # Memory Index
 **Last consolidated:** 2026-04-02
 
-- [project-architecture.md](project-architecture.md) — Pi-up repo structure, 23 extensions, 20 skills, Claude Code VM access
+- [project-architecture.md](project-architecture.md) — Pi-up repo structure, zero-cost parallel-batch spawns, 23 extensions, 20 skills, Claude Code VM access
 - [pi-extension-api.md](pi-extension-api.md) — Common API pitfalls: handler signatures, registerCommand, setStatus, emoji, timestamps
-- [user-preferences.md](user-preferences.md) — bobbybones working style, environment, communication preferences
+- [user-preferences.md](user-preferences.md) — bobbybones working style, environment, Grumpy Mote cat persona, communication preferences
