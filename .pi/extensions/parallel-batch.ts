@@ -233,6 +233,7 @@ async function runWorker(
 	unit: WorkerUnit,
 	worktree: WorktreeInfo,
 	prompt: string,
+	sessionFile: string | undefined,
 	signal: AbortSignal | undefined,
 	onUpdate?: (result: WorkerResult) => void,
 ): Promise<WorkerResult> {
@@ -245,7 +246,11 @@ async function runWorker(
 		usage: { input: 0, output: 0, cost: 0, turns: 0 },
 	};
 
-	const args: string[] = ["--mode", "json", "-p", "--no-session", prompt];
+	const args: string[] = ["--mode", "json", "-p", "--no-session"];
+	if (sessionFile) {
+		args.push("--fork", sessionFile);
+	}
+	args.push(prompt);
 	const invocation = getPiInvocation(args);
 
 	const exitCode = await new Promise<number>((resolve) => {
@@ -342,6 +347,7 @@ async function runWorkersParallel(
 	units: WorkerUnit[],
 	worktrees: WorktreeInfo[],
 	buildPrompt: (unit: WorkerUnit) => string,
+	sessionFile: string | undefined,
 	signal: AbortSignal | undefined,
 	onUpdate: (results: WorkerResult[]) => void,
 ): Promise<WorkerResult[]> {
@@ -371,6 +377,7 @@ async function runWorkersParallel(
 				units[idx],
 				worktrees[idx],
 				prompt,
+				sessionFile,
 				signal,
 				(partial) => {
 					results[idx] = partial;
@@ -499,11 +506,32 @@ End your response with exactly one of:
 				details: { action: "running", state: currentBatch } as BatchToolDetails,
 			});
 
+			const currentSessionFile = ctx.sessionManager.getSessionFile();
+			let tempSessionFile: string | undefined;
+
+			if (currentSessionFile) {
+				tempSessionFile = path.join(os.tmpdir(), `pi-batch-cache-${batchId}.jsonl`);
+				try {
+					const sessionContent = await fs.promises.readFile(currentSessionFile, "utf-8");
+					const lines = sessionContent.split("\n");
+					if (lines.length > 0 && lines[lines.length - 1].trim() === "") {
+						lines.pop();
+					}
+					if (lines.length > 0 && lines[lines.length - 1].includes("batch_orchestrate")) {
+						lines.pop();
+					}
+					await fs.promises.writeFile(tempSessionFile, lines.join("\n") + "\n", "utf-8");
+				} catch (err) {
+					throw new Error(`Failed to create temp session file: ${err instanceof Error ? err.message : String(err)}`);
+				}
+			}
+
 			// Run workers
 			const results = await runWorkersParallel(
 				units,
 				worktrees,
 				buildPrompt,
+				tempSessionFile,
 				signal,
 				(partialResults) => {
 					const running = partialResults.filter((r) => r.exitCode === -1).length;
