@@ -211,34 +211,43 @@ export default function cronScheduler(pi: ExtensionAPI) {
 
 	// ─── Status Bar ───
 
+	// Status needs ctx.ui - store reference from last lifecycle event
+	let lastCtx: { ui: { setStatus: (id: string, text: string | undefined) => void } } | null = null;
+
 	function updateStatus() {
+		if (!lastCtx) return;
 		const count = tasks.size;
 		if (count > 0) {
-			pi.setStatus("cron-scheduler", `cron: ${count} task${count !== 1 ? "s" : ""}`);
+			lastCtx.ui.setStatus("cron-scheduler", `cron: ${count} task${count !== 1 ? "s" : ""}`);
 		} else {
-			pi.setStatus("cron-scheduler", "");
+			lastCtx.ui.setStatus("cron-scheduler", undefined);
 		}
 	}
 
 	// ─── Session Lifecycle ───
 
 	pi.on("session_start", async (_event, ctx) => {
+		lastCtx = ctx;
 		restoreFromBranch(ctx);
 	});
 
 	pi.on("session_switch", async (_event, ctx) => {
+		lastCtx = ctx;
 		restoreFromBranch(ctx);
 	});
 
 	pi.on("session_fork", async (_event, ctx) => {
+		lastCtx = ctx;
 		restoreFromBranch(ctx);
 	});
 
 	pi.on("session_tree", async (_event, ctx) => {
+		lastCtx = ctx;
 		restoreFromBranch(ctx);
 	});
 
 	pi.on("session_compact", async (_event, ctx) => {
+		lastCtx = ctx;
 		restoreFromBranch(ctx);
 	});
 
