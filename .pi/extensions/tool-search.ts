@@ -234,23 +234,31 @@ export default function toolSearch(pi: ExtensionAPI) {
 	pi.registerCommand("tools-deferred", {
 		description: "Show deferred vs active tools",
 		handler: async (_args, ctx) => {
-			if (!initialized) initDeferred();
-			if (!initialized) {
-				ctx.ui.notify("ToolSearch: no tools to defer (all essential).", "info");
-				return;
+			try {
+				if (!initialized) initDeferred();
+
+				const all = pi.getAllTools();
+				const active = pi.getActiveTools();
+				const activeNames = new Set(active.map((t) => t.name));
+
+				const lines = [
+					`Total tools: ${all.length}`,
+					`Active: ${active.length} — ${active.map((t) => t.name).join(", ")}`,
+					`Deferred: ${all.length - active.length}`,
+				];
+
+				const deferred = all.filter((t) => !activeNames.has(t.name));
+				if (deferred.length > 0) {
+					lines.push(`Deferred tools: ${deferred.map((t) => t.name).join(", ")}`);
+				}
+
+				pi.sendUserMessage(
+					"Show me the tool-search deferred tools status: " + lines.join(" | "),
+					{ deliverAs: "followUp" },
+				);
+			} catch (err: any) {
+				ctx.ui.notify(`tools-deferred error: ${err?.message || err}`, "error");
 			}
-
-			const deferred = deferredToolNames.filter((n) => !activeToolNames.has(n));
-			const activated = deferredToolNames.filter((n) => activeToolNames.has(n));
-
-			const lines = [
-				`Always loaded: ${[...ALWAYS_LOADED].join(", ")}`,
-				`Activated this session: ${activated.length > 0 ? activated.join(", ") : "(none)"}`,
-				`Still deferred: ${deferred.length > 0 ? deferred.join(", ") : "(none)"}`,
-				`Total tools: ${allToolNames.length}`,
-			];
-
-			ctx.ui.notify(lines.join("\n"), "info");
 		},
 	});
 
