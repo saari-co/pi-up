@@ -18,7 +18,6 @@
  */
 
 import type { ExtensionAPI } from "@mariozechner/pi-coding-agent";
-import { spawn } from "node:child_process";
 import * as fs from "node:fs";
 import * as path from "node:path";
 
@@ -32,83 +31,70 @@ const CONSOLIDATION_HOURS = 24;
 const MIN_SESSIONS_FOR_DREAM = 3;
 const MAX_RECENT_MESSAGES = 30;
 
-// ─── Subagent runner ───
+// ─── In-process memory extraction (Claude Code pattern: runForkedAgent) ───
+// Instead of spawning a subprocess (cold start, 60s+ overhead), we make a
+// direct API call in-process. This matches Claude Code's extractMemories.ts
+// which uses runForkedAgent() — same process, shared prompt cache.
 
-function getPiCommand(): { command: string; args: string[] } {
-	const currentScript = process.argv[1];
-	if (currentScript && fs.existsSync(currentScript)) {
-		return { command: process.execPath, args: [currentScript] };
-	}
-	return { command: "pi", args: [] };
-}
+let extractionInProgress = false;
 
-/**
- * Spawn a background pi subagent process that runs a prompt and exits.
- * Fire-and-forget — we don't wait for completion or read output.
- * Matches Claude Code's pattern: forked agent with skipTranscript.
- */
-// 🛡️ Kill timer for subagents (Claude Code pattern: abort controller)
-const SUBAGENT_TIMEOUT_MS = 60_000; // 60 seconds max for memory extraction
-let activeSubagentProc: ReturnType<typeof spawn> | null = null;
-let activeKillTimer: ReturnType<typeof setTimeout> | null = null;
+async function runInProcessExtraction(prompt: string, memDir: string): Promise<void> {
+	if (extractionInProgress) return; // Coalesce: skip if already running
+	extractionInProgress = true;
 
-function spawnSubagent(prompt: string, cwd: string): void {
-	// 🛡️ Kill any existing subagent before spawning a new one
-	if (activeSubagentProc && !activeSubagentProc.killed) {
-		activeSubagentProc.kill("SIGTERM");
-	}
-	if (activeKillTimer) {
-		clearTimeout(activeKillTimer);
-		activeKillTimer = null;
-	}
+	try {
+		// Dynamic import to avoid hard dependency
+		const { streamSimple } = await import("@mariozechner/pi-ai");
 
-	const pi = getPiCommand();
-	const dreamModel = process.env.PI_DREAM_MODEL || "gemini-2.5-flash";
-	const args = [...pi.args, "--model", dreamModel, "--mode", "json", "--no-session", "-p", prompt];
+		const context = {
+			messages: [{
+				role: "user" as const,
+				content: prompt,
+				timestamp: Date.now(),
+			}],
+		};
 
-	const currentDepth = parseInt(process.env.PI_SUBAGENT_DEPTH || "0", 10);
+		// Use a timeout to prevent hanging
+		const controller = new AbortController();
+		const timeout = setTimeout(() => controller.abort(), 30_000); // 30s max
 
-	const proc = spawn(pi.command, args, {
-		cwd,
-		shell: false,
-		stdio: ["ignore", "pipe", "pipe"],
-		detached: true,
-		env: {
-			...process.env,
-			PI_IS_SUBAGENT: "true",
-			PI_SUBAGENT_DEPTH: (currentDepth + 1).toString(),
-		},
-	});
-
-	activeSubagentProc = proc;
-
-	// Capture output for debugging
-	let debugOutput = "";
-	proc.stdout?.on("data", (d: Buffer) => { debugOutput += d.toString(); });
-	proc.stderr?.on("data", (d: Buffer) => { debugOutput += d.toString(); });
-
-	// 🛡️ Absolute kill timer — no subagent should run more than 60 seconds
-	activeKillTimer = setTimeout(() => {
-		if (proc && !proc.killed) {
-			proc.kill("SIGTERM");
-			// Log what it was stuck on
-			const fs = require("node:fs");
-			try { fs.writeFileSync("/tmp/pi-scratch-ESS1Rm/auto-dream-timeout.log", debugOutput.slice(-2000)); } catch {}
+		let responseText = "";
+		try {
+			const stream = streamSimple(undefined as any, context);
+			for await (const event of stream) {
+				if (controller.signal.aborted) break;
+				if (event.type === "text_delta") {
+					responseText += event.delta;
+				}
+				if (event.type === "done") {
+					const textContent = event.message?.content?.find((c: any) => c.type === "text");
+					if (textContent && textContent.type === "text") {
+						responseText = textContent.text;
+					}
+					break;
+				}
+			}
+		} finally {
+			clearTimeout(timeout);
 		}
-		activeSubagentProc = null;
-		activeKillTimer = null;
-	}, SUBAGENT_TIMEOUT_MS);
 
-	proc.on("close", () => {
-		if (activeKillTimer) {
-			clearTimeout(activeKillTimer);
-			activeKillTimer = null;
+		// Parse the response for memory file writes
+		// The LLM responds with markdown content to save
+		if (responseText && !responseText.includes("No new memories")) {
+			// Write the extracted memories to a timestamped file
+			const timestamp = new Date().toISOString().replace(/[:.]/g, "-");
+			const memFile = path.join(memDir, `auto-${timestamp}.md`);
+			fs.writeFileSync(memFile, responseText.trim());
 		}
-		activeSubagentProc = null;
-	});
-
-	// Unref so the child doesn't prevent the parent from exiting
-	proc.unref();
+	} catch (err) {
+		// Best-effort: log but don't crash
+		try {
+			fs.writeFileSync("/tmp/pi-auto-dream-error.log",
+				`${new Date().toISOString()}: ${(err as Error).message}\n`, { flag: "a" });
+		} catch { /* ignore */ }
+	} finally {
+		extractionInProgress = false;
+	}
 }
 
 // ─── Memory directory helpers ───
@@ -320,8 +306,8 @@ export default function autoDream(pi: ExtensionAPI) {
 		const manifest = readMemoryManifest(ctx.cwd);
 		const prompt = buildExtractionPrompt(recentText, memDir, manifest);
 
-		// Fire-and-forget: spawn a background pi process
-		spawnSubagent(prompt, ctx.cwd);
+		// In-process extraction — no subprocess, no cold start
+		runInProcessExtraction(prompt, memDir);
 	});
 
 	// On session start, check if full consolidation is needed
@@ -364,9 +350,11 @@ export default function autoDream(pi: ExtensionAPI) {
 			const memDir = ensureMemoryDir(ctx.cwd);
 			const prompt = buildConsolidationPrompt(memDir, sessionDir);
 
-			spawnSubagent(prompt, ctx.cwd);
-			writeTimestamp(ctx.cwd);
-			ctx.ui.notify("Dream: Background consolidation spawned.", "info");
+			runInProcessExtraction(prompt, memDir).then(() => {
+				writeTimestamp(ctx.cwd);
+				ctx.ui.notify("Dream: Background consolidation complete.", "success");
+			});
+			ctx.ui.notify("Dream: Background consolidation started.", "info");
 		},
 	});
 
