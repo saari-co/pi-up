@@ -112,9 +112,15 @@ pi-up/
 │   │   │                                  #   awareness, /stats and /files commands
 │   │   ├── session-state.ts               # Centralized state singleton, skill tracking,
 │   │   │                                  #   memory persistence, /memory and /state commands
-│   │   └── memory-system.ts               # 4-type memory taxonomy (user/feedback/project/
-│   │                                      #   reference), auto-correction detection, memory
-│   │                                      #   injection, /remember and /memories commands
+│   │   ├── memory-system.ts               # 4-type memory taxonomy (user/feedback/project/
+│   │   │                                  #   reference), auto-correction detection, memory
+│   │   │                                  #   injection, /remember and /memories commands
+│   │   └── parallel-batch.ts              # Parallel worktree orchestration, batch_orchestrate
+│   │                                      #   tool, worker spawning, progress tracking,
+│   │                                      #   /batch-status and /batch-cleanup commands
+│   ├── agents/
+│   │   └── batch-worker.md                # Worker agent for parallel batch — implements,
+│   │                                      #   reviews, tests, commits in isolated worktree
 │   └── skills/
 │       ├── bash-security/SKILL.md         # Command validation, CVE patches, injection detection
 │       ├── git-safety/SKILL.md            # Read-only whitelist, commit workflow, PR creation
@@ -125,7 +131,8 @@ pi-up/
 │       ├── debug-workflow/SKILL.md        # Systematic reproduce-isolate-fix-verify
 │       ├── architecture-doc/SKILL.md      # Architecture documentation generation
 │       ├── dependency-audit/SKILL.md      # CVE scanning, staleness, license audit
-│       └── release-prep/SKILL.md          # Pre-release checklist and verification
+│       ├── release-prep/SKILL.md          # Pre-release checklist and verification
+│       └── verify/SKILL.md               # End-to-end verification after implementation
 └── reference3-claude-cli-leak.md          # Source analysis document
 ```
 
@@ -141,6 +148,8 @@ pi-up/
 | `/state` | session-state | Show session state overview |
 | `/remember` | memory-system | Save a memory with type classification |
 | `/memories` | memory-system | View all memories grouped by type |
+| `/batch-status` | parallel-batch | Show current/last batch execution status |
+| `/batch-cleanup` | parallel-batch | Remove worktrees from the last batch |
 
 ---
 
@@ -160,6 +169,8 @@ pi-up/
 | Dangerous patterns | `permissions/dangerousPatterns.ts` | claude-core (DESTRUCTIVE_PATTERNS) |
 | Bash security rules | `utils/bash/commands.ts` | claude-core + bash-security skill |
 | Git read-only validation | `shell/readOnlyCommandValidation.ts` | claude-core + git-safety skill |
+| Worktree isolation | `utils/worktree.ts` | parallel-batch (createWorktree) |
+| Parallel agent spawning | `tools/AgentTool/` | parallel-batch (runWorkersParallel) |
 | Compaction prompts | `services/compact/prompt.ts` | context-tracker (awareness + tracking) |
 | Session state singleton | `bootstrap/state.ts` | session-state extension |
 | Skill preservation | `services/compact/compact.ts` | session-state (invokedSkills map) |
