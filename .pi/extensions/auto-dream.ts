@@ -51,11 +51,18 @@ function spawnSubagent(prompt: string, cwd: string): void {
 	const pi = getPiCommand();
 	const args = [...pi.args, "--mode", "json", "-p", "--no-session", prompt];
 
+	const currentDepth = parseInt(process.env.PI_SUBAGENT_DEPTH || "0", 10);
+
 	const proc = spawn(pi.command, args, {
 		cwd,
 		shell: false,
 		stdio: ["ignore", "ignore", "ignore"],
 		detached: true,
+		env: {
+			...process.env,
+			PI_IS_SUBAGENT: "true",
+			PI_SUBAGENT_DEPTH: (currentDepth + 1).toString(),
+		},
 	});
 
 	// Unref so the child doesn't prevent the parent from exiting
