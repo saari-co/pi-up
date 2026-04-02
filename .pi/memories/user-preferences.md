@@ -15,6 +15,10 @@
 - GCloud project: pi-mom-490823
 - GitHub org: saari-co
 
+## Design philosophy
+- Wants features modeled exactly on Claude Code's architecture — "make it exactly like claude code but for pi"
+- Insists on subagent patterns where Claude Code uses them (not inline shortcuts)
+
 ## Communication style
 - Direct, action-oriented
 - "go ahead", "resume", "hold up", "lets do it"

@@ -20,7 +20,7 @@ A workspace that transforms pi (coding agent by @mariozechner) into a Claude Cod
 - `custom-compaction.ts` — 9-section structured compaction (Claude Code pattern)
 - `todo-tool.ts` — LLM-driven task management tool
 - `plan-mode.ts` — read-only exploration then tracked execution
-- `auto-dream.ts` — background memory consolidation
+- `auto-dream.ts` — memory extraction via detached pi subagent on agent_end (Claude Code pattern: fire-and-forget, --mode json -p --no-session, 1-min cooldown). Also provides `/dream` (foreground) and `/dream-bg` (background) commands.
 
 ## Claude Code source reference
 - Location: GCloud VM at 35.196.68.142 (e2-small-instance, us-east1-c)

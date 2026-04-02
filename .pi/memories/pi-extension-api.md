@@ -48,6 +48,16 @@ Use `pi.exec()` for git commands and system tools.
 Session entry timestamps are ISO 8601 strings, not epoch numbers.
 Parse with `new Date(entry.timestamp).getTime()`.
 
+## Model access
+The current model is `ctx.model` — NOT `ctx.modelRegistry.current()`.
+To look up a specific model: `ctx.modelRegistry.find(provider, id)`.
+```typescript
+// CORRECT
+const model = ctx.model;
+// WRONG — .current() does not exist
+const model = ctx.modelRegistry.current();
+```
+
 ## pi.exec return shape
 ```typescript
 const { stdout, stderr, code, killed } = await pi.exec("git", ["status"]);
