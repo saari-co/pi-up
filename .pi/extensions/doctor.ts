@@ -1,5 +1,6 @@
 /** /doctor — Installation diagnostics. Based on Claude Code's commands/doctor/. */
 import type { ExtensionAPI } from "@mariozechner/pi-coding-agent";
+import * as fs from "node:fs";
 
 type S = "pass" | "warn" | "fail";
 interface C { name: string; status: S; detail: string }
@@ -21,23 +22,19 @@ export default function doctor(pi: ExtensionAPI) {
 			}
 
 			try {
-				const settingsResult = await pi.exec("cat", [".pi/settings.json"]);
-				if (settingsResult.code !== 0) {
-					checks.push({ name: "Settings", status: "warn", detail: ".pi/settings.json not found" });
-				} else {
-					JSON.parse(settingsResult.stdout);
-					checks.push({ name: "Settings", status: "pass", detail: ".pi/settings.json valid JSON" });
-				}
+				const settingsContent = fs.readFileSync(".pi/settings.json", "utf8");
+				JSON.parse(settingsContent);
+				checks.push({ name: "Settings", status: "pass", detail: ".pi/settings.json valid JSON" });
 			} catch {
 				checks.push({ name: "Settings", status: "fail", detail: ".pi/settings.json is malformed JSON" });
 			}
 
 			try {
-				const agentsResult = await pi.exec("test", ["-f", "AGENTS.md"]);
+				const hasAgents = fs.existsSync("AGENTS.md");
 				checks.push({
 					name: "AGENTS.md",
-					status: agentsResult.code === 0 ? "pass" : "warn",
-					detail: agentsResult.code === 0 ? "Present" : "Not found",
+					status: hasAgents ? "pass" : "warn",
+					detail: hasAgents ? "Present" : "Not found",
 				});
 			} catch {
 				checks.push({ name: "AGENTS.md", status: "warn", detail: "Could not check" });

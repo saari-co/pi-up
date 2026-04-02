@@ -20,9 +20,9 @@ function getColorLabel(percent: number): string {
 }
 
 function getStatusIcon(percent: number): string {
-	if (percent >= 90) return "🔴";
-	if (percent >= 70) return "🟡";
-	return "🟢";
+	if (percent >= 90) return "[!]";
+	if (percent >= 70) return "[~]";
+	return "[.]";
 }
 
 function buildBar(percent: number): string {

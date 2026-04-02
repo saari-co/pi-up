@@ -242,7 +242,7 @@ export default function cronScheduler(pi: ExtensionAPI) {
 		restoreFromBranch(ctx);
 	});
 
-	pi.on("session_shutdown", async () => {
+	pi.on("session_shutdown", async (_event, _ctx) => {
 		stopAllTimers();
 	});
 
