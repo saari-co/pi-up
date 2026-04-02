@@ -70,8 +70,19 @@ function analyzeSession(ctx: ExtensionContext): SessionStats {
 	};
 
 	let turnCount = 0;
-	let firstTimestamp = 0;
-	let lastTimestamp = 0;
+	let firstTimestampMs = 0;
+	let lastTimestampMs = 0;
+
+	/** Parse timestamp (ISO string or epoch ms) to epoch ms */
+	function parseTs(ts: any): number {
+		if (!ts) return 0;
+		if (typeof ts === "number") return ts;
+		if (typeof ts === "string") {
+			const d = new Date(ts);
+			return isNaN(d.getTime()) ? 0 : d.getTime();
+		}
+		return 0;
+	}
 
 	// First pass: build a map of toolCallId -> args from assistant tool_use blocks
 	const toolArgsMap = new Map<string, Record<string, any>>();
@@ -89,10 +100,10 @@ function analyzeSession(ctx: ExtensionContext): SessionStats {
 
 	// Second pass: walk entries and extract milestones
 	for (const entry of entries) {
-		const ts = entry.timestamp;
-		if (ts && ts > 0) {
-			if (!firstTimestamp) firstTimestamp = ts;
-			lastTimestamp = ts;
+		const tsMs = parseTs(entry.timestamp);
+		if (tsMs > 0) {
+			if (!firstTimestampMs) firstTimestampMs = tsMs;
+			lastTimestampMs = tsMs;
 		}
 
 		if (entry.type !== "message") continue;
@@ -112,7 +123,7 @@ function analyzeSession(ctx: ExtensionContext): SessionStats {
 					stats.milestones.push({
 						turn: turnCount, type: "start",
 						label: text.slice(0, 70) + (text.length > 70 ? "..." : ""),
-						timestamp: ts || Date.now(),
+						timestamp: tsMs || Date.now(),
 					});
 				}
 			}
@@ -131,7 +142,7 @@ function analyzeSession(ctx: ExtensionContext): SessionStats {
 						stats.milestones.push({
 							turn: turnCount, type: "file_read",
 							label: "Read " + shortenPath(filePath),
-							timestamp: ts || Date.now(),
+							timestamp: tsMs || Date.now(),
 						});
 					}
 				}
@@ -140,14 +151,14 @@ function analyzeSession(ctx: ExtensionContext): SessionStats {
 				stats.milestones.push({
 					turn: turnCount, type: "file_write",
 					label: "Created " + shortenPath(filePath),
-					timestamp: ts || Date.now(),
+					timestamp: tsMs || Date.now(),
 				});
 			} else if (toolName === "edit" && filePath) {
 				stats.filesEdited.add(filePath);
 				stats.milestones.push({
 					turn: turnCount, type: "file_edit",
 					label: "Edited " + shortenPath(filePath),
-					timestamp: ts || Date.now(),
+					timestamp: tsMs || Date.now(),
 				});
 			} else if (toolName === "bash") {
 				stats.bashCommands++;
@@ -161,7 +172,7 @@ function analyzeSession(ctx: ExtensionContext): SessionStats {
 						stats.milestones.push({
 							turn: turnCount, type: "bash",
 							label: "$ " + shortCmd,
-							timestamp: ts || Date.now(),
+							timestamp: tsMs || Date.now(),
 						});
 					}
 				}
@@ -171,7 +182,7 @@ function analyzeSession(ctx: ExtensionContext): SessionStats {
 						turn: turnCount, type: "error",
 						label: "Hit an error",
 						detail: getTextContent(msg).slice(0, 50),
-						timestamp: ts || Date.now(),
+						timestamp: tsMs || Date.now(),
 					});
 				}
 			}
@@ -187,7 +198,7 @@ function analyzeSession(ctx: ExtensionContext): SessionStats {
 						stats.milestones.push({
 							turn: turnCount, type: "decision",
 							label: heading[1].trim(),
-							timestamp: ts || Date.now(),
+							timestamp: tsMs || Date.now(),
 						});
 					}
 				}
@@ -196,8 +207,8 @@ function analyzeSession(ctx: ExtensionContext): SessionStats {
 	}
 
 	stats.turns = turnCount;
-	stats.startTime = firstTimestamp || Date.now();
-	stats.endTime = lastTimestamp || Date.now();
+	stats.startTime = firstTimestampMs || Date.now();
+	stats.endTime = lastTimestampMs || Date.now();
 
 	if (stats.milestones.length > 0) {
 		stats.milestones.push({
