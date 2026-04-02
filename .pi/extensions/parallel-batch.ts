@@ -196,10 +196,17 @@ async function createWorktree(gitRoot: string, slug: string): Promise<WorktreeIn
  */
 async function removeWorktree(gitRoot: string, worktreePath: string, branch: string): Promise<boolean> {
 	const { code } = await execGit(["worktree", "remove", "--force", worktreePath], gitRoot);
-	if (code !== 0) return false;
+	if (code !== 0) {
+		// Fallback: manually remove directory (Claude Code pattern)
+		try { fs.rmSync(worktreePath, { recursive: true, force: true }); } catch { /* ignore */ }
+	}
 
-	// Delete the branch
-	await execGit(["branch", "-D", branch], gitRoot);
+	// 🛡️ CRITICAL FIX: Do NOT delete the branch.
+	// Claude Code only removes the worktree directory, preserving the branch ref.
+	// If the push failed, the code survives in the local branch and can be recovered
+	// via `git log --all` or `git checkout <branch>`.
+	// Only prune worktree metadata:
+	await execGit(["worktree", "prune"], gitRoot);
 	return true;
 }
 
@@ -362,6 +369,42 @@ async function runWorker(
 	else if (pushedMatch) result.branch = pushedMatch[1];
 	else if (committedMatch) result.commitSha = committedMatch[1];
 	else if (failedMatch) result.error = failedMatch[1];
+
+	// 🛡️ CRITICAL FIX: Programmatic push after worker exits.
+	// Don't rely on the LLM to push — it may skip it, run out of turns, or fail.
+	// This ensures code is NEVER lost when worktrees are cleaned up.
+	if (result.exitCode === 0 && !result.prUrl && !result.error) {
+		// Check if there are any commits on this branch
+		const diffCheck = await execGit(["log", "--oneline", `origin/main..HEAD`], worktree.path);
+		if (diffCheck.code === 0 && diffCheck.stdout.trim()) {
+			// Push the branch
+			const pushResult = await execGit(["push", "origin", `HEAD:refs/heads/${worktree.branch}`], worktree.path);
+			if (pushResult.code === 0) {
+				result.branch = worktree.branch;
+				// Try to create a PR via gh CLI (not git — use spawn directly)
+				try {
+					const ghResult = await new Promise<{ code: number; stdout: string }>((resolve) => {
+						let stdout = "";
+						const proc = spawn("gh", [
+							"pr", "create",
+							"--title", unit.title,
+							"--body", `Batch worker: ${unit.description.slice(0, 200)}`,
+							"--head", worktree.branch,
+						], { cwd: worktree.path, stdio: ["ignore", "pipe", "pipe"] });
+						proc.stdout.on("data", (d) => stdout += d.toString());
+						proc.on("close", (code) => resolve({ code: code ?? 1, stdout }));
+					});
+					if (ghResult.code === 0) {
+						const url = ghResult.stdout.trim();
+						if (url.startsWith("http")) result.prUrl = url;
+					}
+				} catch { /* gh CLI not available — branch is pushed, that's enough */ }
+			} else {
+				// Push failed — DON'T cleanup the worktree so code isn't lost
+				result.error = `Push failed: ${pushResult.stderr}. Worktree preserved at ${worktree.path}`;
+			}
+		}
+	}
 
 	return result;
 }
