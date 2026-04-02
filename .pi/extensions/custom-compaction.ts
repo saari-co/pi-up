@@ -76,12 +76,52 @@ Rules:
 - If a section has no content, write "None." and move on
 - Do NOT invent or hallucinate information not present in the conversation`;
 
-export default function (pi: ExtensionAPI) {
+export default function customCompaction(pi: ExtensionAPI) {
+	pi.on("before_agent_start", async (event, ctx) => {
+		const branch = ctx.sessionManager.getBranch();
+		const compactions = branch.filter((e: any) => e.type === "compaction_summary").length;
+		
+		if (compactions > 0) {
+			// Skill Dehydration (#41)
+			// Truncate <available_skills> listing to save ~4k tokens per turn post-compaction
+			const sys = event.systemPrompt;
+			const skillsStart = sys.indexOf("<available_skills>");
+			const skillsEnd = sys.indexOf("</available_skills>");
+			
+			if (skillsStart !== -1 && skillsEnd !== -1) {
+				const before = sys.substring(0, skillsStart);
+				const after = sys.substring(skillsEnd + "</available_skills>".length);
+				
+				const dehydratedSkills = "<available_skills>\n[Skills listing dehydrated post-compaction to save tokens. Use tool_search or reference your previously used skills.]\n</available_skills>";
+				
+				return {
+					systemPrompt: before + dehydratedSkills + after
+				};
+			}
+		}
+	});
+
 	pi.on("session_before_compact", async (event, ctx) => {
 		ctx.ui.notify("Custom compaction: generating structured 9-section summary...", "info");
 
 		const { preparation, signal } = event;
-		const { messagesToSummarize, turnPrefixMessages, tokensBefore, firstKeptEntryId, previousSummary } = preparation;
+		let { messagesToSummarize, turnPrefixMessages, tokensBefore, firstKeptEntryId, previousSummary } = preparation;
+
+		// PTL Lossy Escape Hatch (#42)
+		// If tokens exceed a reasonable fallback limit, explicitly slice the oldest user/assistant blocks.
+		const PTL_THRESHOLD = 180000;
+		if (tokensBefore > PTL_THRESHOLD) {
+			const trimCount = Math.floor(messagesToSummarize.length / 3);
+			messagesToSummarize = messagesToSummarize.slice(trimCount);
+			// Update the UI or logs for the escape hatch
+			ctx.ui.notify(`[PTL Escape Hatch] Truncated ${trimCount} messages for compaction retry`, "warning");
+			
+			// Inject the truncation marker into the new oldest message if it's text
+			const oldestMessage = messagesToSummarize[0];
+			if (oldestMessage && typeof oldestMessage.content === "string") {
+				oldestMessage.content = "[earlier conversation truncated for compaction retry]\n\n" + oldestMessage.content;
+			}
+		}
 
 		// Use the current conversation model
 		const model = ctx.model;
