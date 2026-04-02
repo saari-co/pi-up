@@ -1,10 +1,14 @@
-import { spawn } from "node:child_process";
+import { spawn, type ChildProcess } from "node:child_process";
 import * as fs from "node:fs";
 import * as path from "node:path";
 import type { ExtensionAPI } from "@mariozechner/pi-coding-agent";
 
 // Track the pending speculation prompt globally in this session.
 let pendingSpeculationPrompt: string | null = null;
+let activeSpecProc: ChildProcess | null = null;
+
+// 🛡️ Timeout: kill speculation after 90 seconds (Claude Code uses abort controllers)
+const SPECULATION_TIMEOUT_MS = 90_000;
 
 export default function speculationEngine(pi: ExtensionAPI) {
 	// Register the /speculate command
@@ -37,13 +41,25 @@ export default function speculationEngine(pi: ExtensionAPI) {
 					PI_IS_SUBAGENT: "true",
 					PI_SUBAGENT_DEPTH: ((parseInt(process.env.PI_SUBAGENT_DEPTH || "0", 10)) + 1).toString()
 				},
+				stdio: ["ignore", "pipe", "pipe"],
 			});
 
+			activeSpecProc = proc;
 			let output = "";
 			proc.stdout.on("data", (d: Buffer) => (output += d.toString()));
 			proc.stderr.on("data", (d: Buffer) => (output += d.toString()));
 
+			// 🛡️ Kill timer — abort if speculation takes too long (mirrors Claude Code's abort controller)
+			const killTimer = setTimeout(() => {
+				if (!proc.killed) {
+					proc.kill("SIGTERM");
+					if (ctx.hasUI) ctx.ui.notify("Speculation timed out after 90s and was killed.", "error");
+				}
+			}, SPECULATION_TIMEOUT_MS);
+
 			proc.on("close", () => {
+				clearTimeout(killTimer);
+				activeSpecProc = null;
 				fs.mkdirSync("/tmp/pi-speculation", { recursive: true });
 				fs.writeFileSync("/tmp/pi-speculation-result.txt", output);
 				if (ctx.hasUI) {
