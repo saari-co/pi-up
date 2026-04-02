@@ -249,6 +249,12 @@ export default function autoDream(pi: ExtensionAPI) {
 	pi.on("agent_end", async (event, ctx) => {
 		if (!extractionEnabled) return;
 
+		// 🛡️ CRITICAL SAFETY: Never dream if we are already a subagent.
+		// This prevents exponential subagent explosions that burn API credits.
+		if (process.env.PI_IS_SUBAGENT === "true" || process.env.PI_SUBAGENT_DEPTH) {
+			return;
+		}
+
 		// Cooldown: don't extract more than once per minute
 		const now = Date.now();
 		if (now - lastExtractionTime < EXTRACT_COOLDOWN_MS) return;

@@ -253,11 +253,19 @@ async function runWorker(
 	args.push(prompt);
 	const invocation = getPiInvocation(args);
 
+	const currentDepth = parseInt(process.env.PI_SUBAGENT_DEPTH || "0", 10);
+
 	const exitCode = await new Promise<number>((resolve) => {
 		const proc = spawn(invocation.command, invocation.args, {
 			cwd: worktree.path,
 			shell: false,
 			stdio: ["ignore", "pipe", "pipe"],
+			env: { 
+				...process.env, 
+				PI_IS_SUBAGENT: "true", 
+				PI_SUBAGENT_DEPTH: (currentDepth + 1).toString(),
+				PI_MODEL: "claude-3-5-sonnet" 
+			},
 		});
 
 		let buffer = "";
@@ -428,6 +436,11 @@ export default function parallelBatch(pi: ExtensionAPI) {
 		}),
 
 		async execute(_toolCallId, params, signal, onUpdate, ctx) {
+			// 🛡️ Guard against subagent recursion
+			if (process.env.PI_IS_SUBAGENT === "true" || process.env.PI_SUBAGENT_DEPTH) {
+				throw new Error("Cannot run batch_orchestrate from within a subagent.");
+			}
+
 			// Validate git repo
 			const gitRoot = await findGitRoot(ctx.cwd);
 			if (!gitRoot) {
