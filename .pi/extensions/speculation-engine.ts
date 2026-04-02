@@ -17,7 +17,7 @@ export default function speculationEngine(pi: ExtensionAPI) {
 			}
 
 			const sessionFile = ctx.sessionManager.getSessionFile();
-			const spawnArgs = [];
+			const spawnArgs = ["--mode", "json"];
 			if (sessionFile) {
 				spawnArgs.push("--fork", sessionFile);
 			} else {
