@@ -67,7 +67,7 @@ function formatEntryMarkdown(entry: any): string | null {
 }
 
 export default function exportConversation(pi: ExtensionAPI) {
-	pi.registerCommand("export", {
+	pi.registerCommand("save-session", {
 		description: "Export conversation to markdown or JSON. Usage: /export [filename] [json]",
 		handler: async (args, ctx) => {
 			const entries = ctx.sessionManager.getEntries();
