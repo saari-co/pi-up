@@ -10,6 +10,7 @@
 
 import type { ExtensionAPI } from "@mariozechner/pi-coding-agent";
 import { Type } from "@sinclair/typebox";
+import { Text } from "@mariozechner/pi-tui";
 
 // Tools that must always be loaded (never deferred)
 const ALWAYS_LOADED = new Set([
@@ -101,7 +102,9 @@ export default function toolSearch(pi: ExtensionAPI) {
 			const { query, max_results = 5 } = params;
 
 			if (!initialized) {
-				return { result: "ToolSearch not initialized -- all tools are already active." };
+				return {
+					content: [{ type: "text", text: "ToolSearch not initialized -- all tools are already active." }],
+				};
 			}
 
 			const currentlyDeferred = deferredToolNames.filter(
@@ -109,7 +112,9 @@ export default function toolSearch(pi: ExtensionAPI) {
 			);
 
 			if (currentlyDeferred.length === 0) {
-				return { result: "All tools are already active. No deferred tools remaining." };
+				return {
+					content: [{ type: "text", text: "All tools are already active. No deferred tools remaining." }],
+				};
 			}
 
 			const selectMatch = query.match(/^select:(.+)$/i);
@@ -145,7 +150,9 @@ export default function toolSearch(pi: ExtensionAPI) {
 				}
 				lines.push("Remaining deferred: " + (currentlyDeferred.length - found.length));
 
-				return { result: lines.join("\n") };
+				return {
+					content: [{ type: "text", text: lines.join("\n") }],
+				};
 			}
 
 			// Keyword search
@@ -186,7 +193,7 @@ export default function toolSearch(pi: ExtensionAPI) {
 
 			if (matches.length === 0) {
 				return {
-					result: "No deferred tools match \"" + query + "\".\nAvailable deferred tools: " + currentlyDeferred.join(", "),
+					content: [{ type: "text", text: "No deferred tools match \"" + query + "\".\nAvailable deferred tools: " + currentlyDeferred.join(", ") }],
 				};
 			}
 
@@ -196,16 +203,17 @@ export default function toolSearch(pi: ExtensionAPI) {
 			pi.setActiveTools([...activeToolNames]);
 
 			return {
-				result: "Found and activated: " + matches.join(", ") + "\nThese tools are now callable. Remaining deferred: " + (currentlyDeferred.length - matches.length),
+				content: [{ type: "text", text: "Found and activated: " + matches.join(", ") + "\nThese tools are now callable. Remaining deferred: " + (currentlyDeferred.length - matches.length) }],
 			};
 		},
 
 		renderCall(args) {
-			return "Searching tools: " + args.query;
+			return new Text("Searching tools: " + args.query, 0, 0);
 		},
 
 		renderResult(result) {
-			return typeof result === "string" ? result : JSON.stringify(result);
+			const text = result.content[0]?.text ?? "";
+			return new Text(text, 0, 0);
 		},
 	});
 
