@@ -535,3 +535,55 @@ The coordinator system prompt is ~4000 tokens of detailed orchestration instruct
 **Source:** `services/compact/apiMicrocompact.ts`
 **What it does:** Uses a beta Anthropic API feature (`clear_tool_uses_20250919`) that allows the client to tell the API to delete specific tool results from its prompt cache memory directly. Targets High-I/O tools like grep, ls, and read.
 **Pi implementation:** This requires Anthropic API support. As a fallback, our `micro-compact.ts` extension actively overwrites the string payloads of old `toolResult` blocks before sending the request.
+
+---
+
+## Tier 6: Claude Code Architecture Parity (April 2026 Deep Dive #3)
+
+### 45. Split Compaction into Separate Modules
+**Source:** `services/compact/` (7 separate files)
+**What it does:** Claude Code separates compaction concerns into distinct modules:
+- `compact.ts` — Main LLM-based summarization (image stripping, skill dehydration, PTL retry)
+- `microCompact.ts` — Deterministic pre-pass clearing old tool results
+- `apiMicrocompact.ts` — API-native `clear_tool_uses` beta feature
+- `sessionMemoryCompact.ts` — Rolling invariant-preserving memory
+- `postCompactCleanup.ts` — Post-compaction cleanup (strip thinking, re-inject tools, clean empties)
+- `autoCompact.ts` — Orchestrator deciding WHEN to compact and which strategy
+- `grouping.ts` — Groups messages into API rounds for truncation
+**Pi implementation:** Split our monolithic `custom-compaction.ts` into separate files matching this architecture.
+
+### 46. Post-Compact Cleanup
+**Source:** `services/compact/postCompactCleanup.ts`
+**What it does:** Runs AFTER compaction completes:
+- Strips `<thinking>` blocks from compacted output (they waste tokens post-summary)
+- Re-injects minimal tool schemas so the model doesn't forget its tools
+- Removes empty text blocks left behind by content stubbing
+- Cleans up orphaned tool_result blocks with no matching tool_use
+**Pi implementation:** New extension `post-compact-cleanup.ts` hooking `session_after_compact`.
+
+### 47. Coordinator Mode with Dispatch-Only Agent
+**Source:** `coordinator/coordinatorMode.ts`
+**What it does:** A session mode where the agent becomes a pure orchestrator:
+- Can ONLY use `dispatch_agent`, `send_message`, and `task_stop` tools
+- Cannot use read/edit/bash directly — must delegate to workers
+- Each worker gets an isolated git worktree
+- Manages concurrency: read-only tasks parallel, write tasks serialize per file set
+- Tracks worker results via `<task-notification>` XML messages
+- Synthesizes findings before directing follow-up work
+- ~4000 token system prompt with detailed orchestration rules
+**Pi implementation:** New extension `coordinator-mode.ts` with `/coordinate` command.
+
+### 48. Mailbox System for Inter-Agent Communication
+**Source:** `utils/mailbox.ts`
+**What it does:** File-based JSON message queue at `/tmp/claude-code-mailbox/<sessionId>.json`. Workers write results, coordinator reads them. Simple filesystem-based IPC — no sockets, no databases.
+**Pi implementation:** New extension or utility integrated into `coordinator-mode.ts` and `parallel-batch.ts`.
+
+### 49. API Preconnect — TCP/TLS Warmup
+**Source:** `utils/apiPreconnect.ts`
+**What it does:** On startup, before any API call, opens a TCP+TLS connection to the provider endpoint using `https.request()` with `createConnection` override. Connection stays alive in the Node agent pool. Shaves 200-500ms off the first API response.
+**Pi implementation:** New extension `api-preconnect.ts` hooking `agent_start`.
+
+### 50. API-Native Micro-Compaction (clear_tool_uses)
+**Source:** `services/compact/apiMicrocompact.ts`
+**What it does:** Uses the `clear_tool_uses_20250919` beta API header. Tells the Anthropic API to forget specific `tool_use`/`tool_result` pairs by ID. Targets high-I/O tools (bash, read, grep, ls). Fires when context hits 180k tokens. Falls back to client-side stubbing if the API feature isn't available.
+**Pi implementation:** New extension `api-microcompact.ts` hooking `before_provider_request`.
