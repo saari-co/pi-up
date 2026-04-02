@@ -35,6 +35,7 @@ pi.sendUserMessage(text, { deliverAs: "followUp" });
 ```typescript
 ctx.ui.notify("message", "info");  // "info" | "warning" | "error" | "success"
 ```
+WRONG: `"warn"` — must be `"warning"`.
 
 ## No emoji in TUI
 Emoji and Unicode box-drawing characters can cause TUI width calculation crashes.
