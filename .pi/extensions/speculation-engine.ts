@@ -31,7 +31,12 @@ export default function speculationEngine(pi: ExtensionAPI) {
 
 			// Spawn the speculation agent in non-interactive mode
 			const proc = spawn(process.argv[0], [process.argv[1]!, ...spawnArgs], {
-				env: { ...process.env, PI_SPECULATE: "true" },
+				env: { 
+					...process.env, 
+					PI_SPECULATE: "true",
+					PI_IS_SUBAGENT: "true",
+					PI_SUBAGENT_DEPTH: ((parseInt(process.env.PI_SUBAGENT_DEPTH || "0", 10)) + 1).toString()
+				},
 			});
 
 			let output = "";
