@@ -31,9 +31,9 @@ export default function toolSearch(pi: ExtensionAPI) {
 	let activeToolNames: Set<string> = new Set();
 	let initialized = false;
 
-	// After session starts and tools are registered, defer non-essential ones
+	// Initialize on session_start and also on first before_agent_start
+	// (covers reload mid-session where session_start already fired)
 	pi.on("session_start", async (_event, _ctx) => {
-		// Small delay to let other extensions register tools first
 		setTimeout(() => initDeferred(), 500);
 	});
 
@@ -67,8 +67,9 @@ export default function toolSearch(pi: ExtensionAPI) {
 		}
 	}
 
-	// Inject deferred tool list into system prompt
+	// Inject deferred tool list into system prompt + lazy init on first turn
 	pi.on("before_agent_start", async (event, _ctx) => {
+		if (!initialized) initDeferred();
 		if (!initialized || deferredToolNames.length === 0) return;
 
 		const deferredList = deferredToolNames
@@ -233,8 +234,9 @@ export default function toolSearch(pi: ExtensionAPI) {
 	pi.registerCommand("tools-deferred", {
 		description: "Show deferred vs active tools",
 		handler: async (_args, ctx) => {
+			if (!initialized) initDeferred();
 			if (!initialized) {
-				ctx.ui.notify("ToolSearch not initialized — all tools active.", "info");
+				ctx.ui.notify("ToolSearch: no tools to defer (all essential).", "info");
 				return;
 			}
 
