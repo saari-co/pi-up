@@ -76,10 +76,10 @@ Rules:
 - If a section has no content, write "None." and move on
 - Do NOT invent or hallucinate information not present in the conversation`;
 
-export default function customCompaction(pi: ExtensionAPI) {
+export default function (pi: ExtensionAPI) {
 	pi.on("before_agent_start", async (event, ctx) => {
 		const branch = ctx.sessionManager.getBranch();
-		const compactions = branch.filter((e: any) => e.type === "compaction_summary").length;
+		const compactions = branch.filter(e => e.type === "compaction_summary").length;
 		
 		if (compactions > 0) {
 			// Skill Dehydration (#41)
@@ -105,23 +105,7 @@ export default function customCompaction(pi: ExtensionAPI) {
 		ctx.ui.notify("Custom compaction: generating structured 9-section summary...", "info");
 
 		const { preparation, signal } = event;
-		let { messagesToSummarize, turnPrefixMessages, tokensBefore, firstKeptEntryId, previousSummary } = preparation;
-
-		// PTL Lossy Escape Hatch (#42)
-		// If tokens exceed a reasonable fallback limit, explicitly slice the oldest user/assistant blocks.
-		const PTL_THRESHOLD = 180000;
-		if (tokensBefore > PTL_THRESHOLD) {
-			const trimCount = Math.floor(messagesToSummarize.length / 3);
-			messagesToSummarize = messagesToSummarize.slice(trimCount);
-			// Update the UI or logs for the escape hatch
-			ctx.ui.notify(`[PTL Escape Hatch] Truncated ${trimCount} messages for compaction retry`, "warning");
-			
-			// Inject the truncation marker into the new oldest message if it's text
-			const oldestMessage = messagesToSummarize[0];
-			if (oldestMessage && typeof oldestMessage.content === "string") {
-				oldestMessage.content = "[earlier conversation truncated for compaction retry]\n\n" + oldestMessage.content;
-			}
-		}
+		const { messagesToSummarize, turnPrefixMessages, tokensBefore, firstKeptEntryId, previousSummary } = preparation;
 
 		// Use the current conversation model
 		const model = ctx.model;
@@ -136,8 +120,38 @@ export default function customCompaction(pi: ExtensionAPI) {
 			return;
 		}
 
+		// PTL Lossy Escape Hatch (#42)
+		// If tokens exceed a reasonable fallback limit, explicitly slice the oldest user/assistant blocks.
+		const PTL_THRESHOLD = 180000;
+		if (tokensBefore > PTL_THRESHOLD) {
+			const trimCount = Math.floor(messagesToSummarize.length / 3);
+			messagesToSummarize.splice(0, trimCount);
+			ctx.ui.notify(`[PTL Escape Hatch] Truncated ${trimCount} messages for compaction retry`, "warning");
+			
+			// Inject the truncation marker into the new oldest message if it's text
+			const oldestMessage = messagesToSummarize[0];
+			if (oldestMessage && typeof oldestMessage.content === "string") {
+				oldestMessage.content = "[earlier conversation truncated for compaction retry]\n\n" + oldestMessage.content;
+			}
+		}
+
 		const allMessages = [...messagesToSummarize, ...turnPrefixMessages];
-		const conversationText = serializeConversation(convertToLlm(allMessages));
+		
+		// Image Stripper (#8)
+		const textOnlyMessages = allMessages.map((msg) => {
+			if (msg.role === "user" && Array.isArray(msg.content)) {
+				return {
+					...msg,
+					content: msg.content.map((block: any) =>
+						block.type === "image" ? { type: "text", text: "[Image attached by user removed for compaction]" } : block
+					),
+				};
+			}
+			return msg;
+		});
+
+		// @ts-ignore
+		const conversationText = serializeConversation(convertToLlm(textOnlyMessages));
 
 		const previousContext = previousSummary
 			? `\n\nA previous compaction summary exists. Incorporate its information where relevant:\n<previous_summary>\n${previousSummary}\n</previous_summary>`
