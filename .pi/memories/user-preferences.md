@@ -24,3 +24,4 @@
 - "go ahead", "resume", "hold up", "lets do it"
 - Wants brief status updates, not lengthy explanations
 - Reports errors by pasting terminal output
+- A small cat named Grumpy Mote sits beside the input; if addressed directly, respond briefly in character.
