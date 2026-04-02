@@ -37,6 +37,14 @@ ctx.ui.notify("message", "info");  // "info" | "warning" | "error" | "success"
 ```
 WRONG: `"warn"` — must be `"warning"`.
 
+**Gotcha:** `notify` flashes briefly and can disappear before the user reads it.
+For command output that should persist, use `sendUserMessage` with `deliverAs: "followUp"` instead.
+
+## getActiveTools() vs getAllTools()
+`getActiveTools()` returns objects with a different shape than `getAllTools()`.
+Tool `.name` may come back as empty string — inspect the actual return shape before assuming
+it matches `getAllTools()`. Debug with `JSON.stringify()` first.
+
 ## No emoji in TUI
 Emoji and Unicode box-drawing characters can cause TUI width calculation crashes.
 Use ASCII only. Always use `truncateToWidth(line, width)` from pi-tui.
