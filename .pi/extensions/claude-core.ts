@@ -124,6 +124,10 @@ export default function claudeCore(pi: ExtensionAPI) {
 	// ─── Permission Gate (tool_call) ───
 	// From src/utils/permissions/permissions.ts — two-tier safety check
 	pi.on("tool_call", async (event, ctx) => {
+		let isBlocked = false;
+		let blockReason = "";
+		let isDestructive = false;
+
 		// === BASH TOOL SECURITY ===
 		if (event.toolName === "bash") {
 			const command = (event.input.command as string) || "";
@@ -131,81 +135,110 @@ export default function claudeCore(pi: ExtensionAPI) {
 			// Tier 1: Block command substitution patterns (CVE-class, §3.4)
 			for (const pattern of COMMAND_SUBSTITUTION_PATTERNS) {
 				if (pattern.test(command)) {
-					// Don't block if it's inside quotes (heredoc, string literal)
-					// This is a simplified check — Claude Code uses tree-sitter AST parsing
 					const inQuotes = /(['"]).*\$\(.*\1/.test(command) || /\bcat\s+<</.test(command);
 					if (!inQuotes) {
-						return {
-							block: true,
-							reason: `<tool_use_error>Security: Command substitution pattern detected. Use explicit commands instead of \$(...) or backtick substitution.</tool_use_error>`,
-						};
+						isBlocked = true;
+						blockReason = `<tool_use_error>Security: Command substitution pattern detected. Use explicit commands instead of \$(...) or backtick substitution.</tool_use_error>`;
+						break;
+					}
+				}
+			}
+
+			// Tier 1.5: Dangerous Script Runners / Bash Patterns
+			if (!isBlocked) {
+				const firstWord = command.trim().split(/\s+/)[0];
+				if (firstWord && DANGEROUS_BASH_PATTERNS.includes(firstWord)) {
+					if (!ctx.hasUI) {
+						isBlocked = true;
+						blockReason = "Dangerous script runner blocked (no UI for confirmation)";
+					} else {
+						const choice = await ctx.ui.select(
+							`⚠️ Dangerous script runner detected:\n\n  ${command}\n\nThis executes arbitrary code and bypasses shell security.`,
+							["Allow this once", "Block"],
+						);
+						if (choice !== "Allow this once") {
+							isBlocked = true;
+							blockReason = "Blocked by user — dangerous script runner.";
+							isDestructive = true;
+						} else {
+							denials = { ...denials, consecutiveDenials: 0 };
+						}
 					}
 				}
 			}
 
 			// Tier 2: Destructive pattern confirmation
-			const matchedDestructive = DESTRUCTIVE_PATTERNS.find((p) => p.test(command));
-			if (matchedDestructive) {
-				if (!ctx.hasUI) {
-					return { block: true, reason: "Dangerous command blocked (no UI for confirmation)" };
+			if (!isBlocked) {
+				const matchedDestructive = DESTRUCTIVE_PATTERNS.find((p) => p.test(command));
+				if (matchedDestructive) {
+					if (!ctx.hasUI) {
+						isBlocked = true;
+						blockReason = "Dangerous command blocked (no UI for confirmation)";
+					} else {
+						const choice = await ctx.ui.select(
+							`⚠️  Destructive command detected:\n\n  ${command}\n\nThis action may be hard to reverse.`,
+							["Allow this once", "Block"],
+						);
+						if (choice !== "Allow this once") {
+							isBlocked = true;
+							blockReason = "Blocked by user — consider a safer approach";
+							isDestructive = true;
+						} else {
+							denials = { ...denials, consecutiveDenials: 0 };
+						}
+					}
 				}
-
-				const choice = await ctx.ui.select(
-					`⚠️  Destructive command detected:\n\n  ${command}\n\nThis action may be hard to reverse.`,
-					["Allow this once", "Block"],
-				);
-
-				if (choice !== "Allow this once") {
-					denials = { ...denials, consecutiveDenials: denials.consecutiveDenials + 1, totalDenials: denials.totalDenials + 1 };
-					rejectedCommands.push({ command, reason: "User blocked destructive command", timestamp: Date.now() });
-					return { block: true, reason: "Blocked by user — consider a safer approach" };
-				}
-				denials = { ...denials, consecutiveDenials: 0 };
 			}
 
 			// Tier 3: Tool preference enforcement (§1.3)
-			for (const [cmd, info] of Object.entries(TOOL_PREFERENCE_VIOLATIONS)) {
-				if (info.pattern.test(command)) {
-					sessionToolPreferenceWarnings++;
-					// Don't block, just note — matches Claude Code behavior
-					// The system prompt already tells the model to prefer dedicated tools
-					if (sessionToolPreferenceWarnings <= 3) {
-						// Only warn first few times to avoid noise
+			if (!isBlocked) {
+				for (const [cmd, info] of Object.entries(TOOL_PREFERENCE_VIOLATIONS)) {
+					if (info.pattern.test(command)) {
+						sessionToolPreferenceWarnings++;
+						break;
 					}
-					break;
 				}
 			}
 
 			// Tier 4: Git safety (§A8)
-			const gitMatch = command.match(/\bgit\s+(\w+)/);
-			if (gitMatch) {
-				const subcommand = gitMatch[1];
+			if (!isBlocked) {
+				const gitMatch = command.match(/\bgit\s+(\w+)/);
+				if (gitMatch) {
+					const subcommand = gitMatch[1];
 
-				// Check for git --no-verify (blocked by default per Claude Code source)
-				if (/--no-verify/.test(command)) {
-					if (!ctx.hasUI) {
-						return { block: true, reason: "git --no-verify blocked (skips hooks)" };
-					}
-					const ok = await ctx.ui.select(
-						`⚠️  git --no-verify skips safety hooks:\n\n  ${command}\n\nThis bypasses pre-commit checks.`,
-						["Allow", "Block"],
-					);
-					if (ok !== "Allow") {
-						return { block: true, reason: "Blocked: --no-verify skips safety hooks. Fix the underlying issue instead." };
-					}
-				}
-
-				// Check for mutating git operations
-				const isMutating = GIT_MUTATING_COMMANDS.some((p) => p.test(command));
-				if (isMutating && subcommand !== "commit") {
-					// Mutating operations (not commit) get a confirmation
-					if (ctx.hasUI) {
-						const ok = await ctx.ui.select(
-							`Git operation: ${command}\n\nThis modifies repository state.`,
-							["Allow", "Block"],
-						);
-						if (ok !== "Allow") {
-							return { block: true, reason: `Git ${subcommand} blocked by user` };
+					if (/--no-verify/.test(command)) {
+						if (!ctx.hasUI) {
+							isBlocked = true;
+							blockReason = "git --no-verify blocked (skips hooks)";
+						} else {
+							const ok = await ctx.ui.select(
+								`⚠️  git --no-verify skips safety hooks:\n\n  ${command}\n\nThis bypasses pre-commit checks.`,
+								["Allow", "Block"],
+							);
+							if (ok !== "Allow") {
+								isBlocked = true;
+								blockReason = "Blocked: --no-verify skips safety hooks. Fix the underlying issue instead.";
+								isDestructive = true;
+							} else {
+								denials = { ...denials, consecutiveDenials: 0 };
+							}
+						}
+					} else {
+						const isMutating = GIT_MUTATING_COMMANDS.some((p) => p.test(command));
+						if (isMutating && subcommand !== "commit") {
+							if (ctx.hasUI) {
+								const ok = await ctx.ui.select(
+									`Git operation: ${command}\n\nThis modifies repository state.`,
+									["Allow", "Block"],
+								);
+								if (ok !== "Allow") {
+									isBlocked = true;
+									blockReason = `Git ${subcommand} blocked by user`;
+									isDestructive = true;
+								} else {
+									denials = { ...denials, consecutiveDenials: 0 };
+								}
+							}
 						}
 					}
 				}
@@ -213,7 +246,7 @@ export default function claudeCore(pi: ExtensionAPI) {
 		}
 
 		// === WRITE/EDIT TOOL — Protected paths ===
-		if (event.toolName === "write" || event.toolName === "edit") {
+		if (!isBlocked && (event.toolName === "write" || event.toolName === "edit")) {
 			const path = (event.input.path as string) || "";
 			const protectedPatterns = [
 				/\.env($|\.)/,
@@ -226,15 +259,67 @@ export default function claudeCore(pi: ExtensionAPI) {
 			const isProtected = protectedPatterns.some((p) => p.test(path));
 			if (isProtected) {
 				if (!ctx.hasUI) {
-					return { block: true, reason: `Protected path: ${path}` };
+					isBlocked = true;
+					blockReason = `Protected path: ${path}`;
+				} else {
+					const ok = await ctx.ui.select(
+						`⚠️  Writing to protected path:\n\n  ${path}\n\nThis file may contain sensitive data.`,
+						["Allow", "Block"],
+					);
+					if (ok !== "Allow") {
+						isBlocked = true;
+						blockReason = `Protected path blocked: ${path}`;
+						isDestructive = true;
+					} else {
+						denials = { ...denials, consecutiveDenials: 0 };
+					}
 				}
-				const ok = await ctx.ui.select(
-					`⚠️  Writing to protected path:\n\n  ${path}\n\nThis file may contain sensitive data.`,
-					["Allow", "Block"],
-				);
-				if (ok !== "Allow") {
-					return { block: true, reason: `Protected path blocked: ${path}` };
+			}
+		}
+
+		// Handle blocking and denial limits
+		if (isBlocked) {
+			if (isDestructive) {
+				denials = { ...denials, consecutiveDenials: denials.consecutiveDenials + 1, totalDenials: denials.totalDenials + 1 };
+				rejectedCommands.push({ 
+					command: event.toolName === "bash" ? (event.input.command as string) : `[${event.toolName}] ${(event.input.path as string)}`, 
+					reason: blockReason, 
+					timestamp: Date.now() 
+				});
+			}
+
+			// 3-Strike Denial Breaker (Feature 3)
+			if (denials.consecutiveDenials >= DENIAL_LIMITS.maxConsecutive || denials.totalDenials >= DENIAL_LIMITS.maxTotal) {
+				if (ctx.hasUI) ctx.ui.notify("Too many consecutive denied tool calls. Dropping out of auto mode.", "error");
+				return { 
+					block: true, 
+					reason: "CRITICAL: Consecutive denials exceeded. You MUST stop using tools and ask the user for guidance." 
+				};
+			}
+
+			return { block: true, reason: blockReason };
+		} else {
+			// If a tool successfully passes the gate, reset consecutive denials
+			denials = { ...denials, consecutiveDenials: 0 };
+		}
+
+		return undefined;
+	});
+
+	// ─── Before Provider Request (Payload Mutation) ───
+	pi.on("before_provider_request", (event, ctx) => {
+		const payload = event.payload as any;
+
+		// 🛡️ Thinking Budget Constraint (Feature 5)
+		// API Rule: thinking.budget_tokens must be < max_tokens
+		if (payload && payload.max_tokens && payload.thinking && payload.thinking.budget_tokens) {
+			if (payload.thinking.budget_tokens >= payload.max_tokens) {
+				payload.thinking.budget_tokens = payload.max_tokens - 1;
+				if (ctx.hasUI) {
+					ctx.ui.setStatus("claude-core", "⚠️ Clamped thinking budget to maxTokens - 1");
+					setTimeout(() => ctx.ui.setStatus("claude-core", undefined), 3000);
 				}
+				return payload;
 			}
 		}
 

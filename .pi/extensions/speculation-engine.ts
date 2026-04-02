@@ -156,6 +156,22 @@ export default function speculationEngine(pi: ExtensionAPI) {
 				if (ctx.hasUI) ctx.ui.notify(`Error reading speculation result: ${err.message}`, "error");
 			}
 		}
+
+		// 🛡️ Speculation Max Turns Guardrail (Feature 2)
+		if (process.env.PI_SPECULATE === "true") {
+			const turnCount = ctx.sessionManager.getEntries().length; // Rough turn count
+			const MAX_SPECULATION_TURNS = 1; // Strict 1-turn limit
+			
+			if (turnCount > MAX_SPECULATION_TURNS) {
+				pi.sendMessage({
+					customType: "speculation-timeout",
+					content: `Error: Reached maximum number of turns (${MAX_SPECULATION_TURNS}) for Speculation Engine. Aborting.`,
+					display: true
+				});
+				return { action: "handled" }; // Stop processing further inputs
+			}
+		}
+
 		return { action: "continue" };
 	});
 }

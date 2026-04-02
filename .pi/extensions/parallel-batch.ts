@@ -300,6 +300,14 @@ async function runWorker(
 								const cacheWriteCost = (usage as any).cacheWriteCost || 0;
 								result.usage.cost += (usage.cost?.total || 0) + cacheReadCost + cacheWriteCost;
 							}
+							
+							// 🛡️ Batch Worker Max Turns Guardrail (Feature 2)
+							const MAX_TURNS = 20;
+							if (result.usage.turns >= MAX_TURNS) {
+								result.error = `FAILED: Reached maximum number of turns (${MAX_TURNS})`;
+								result.exitCode = 1;
+								proc.kill("SIGTERM");
+							}
 						}
 						onUpdate?.(result);
 					}
