@@ -161,6 +161,10 @@ export default function speculationEngine(pi: ExtensionAPI) {
 			const currentDepth = parseInt(process.env.PI_SUBAGENT_DEPTH || "0", 10);
 
 			// 🛡️ Spawn with full guardrails
+			// Use cheaper model for speculation (Claude Code uses CLAUDE_CODE_SUBAGENT_MODEL)
+			// Defaults to claude-3-5-sonnet, override with PI_SPECULATION_MODEL env var
+			const speculationModel = process.env.PI_SPECULATION_MODEL || "claude-3-5-sonnet";
+
 			const proc = spawn(process.argv[0], [process.argv[1]!, ...spawnArgs], {
 				env: {
 					...process.env,
@@ -169,6 +173,7 @@ export default function speculationEngine(pi: ExtensionAPI) {
 					PI_SUBAGENT_DEPTH: (currentDepth + 1).toString(),
 					PI_SPECULATION_OVERLAY_ID: overlay.id,
 					PI_SPECULATION_OVERLAY_ROOT: overlay.root,
+					PI_MODEL: speculationModel,
 				},
 				stdio: ["ignore", "pipe", "pipe"],
 			});
