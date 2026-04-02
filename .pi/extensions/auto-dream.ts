@@ -71,7 +71,7 @@ function spawnSubagent(prompt: string, cwd: string): void {
 	const proc = spawn(pi.command, args, {
 		cwd,
 		shell: false,
-		stdio: ["ignore", "ignore", "ignore"],
+		stdio: ["ignore", "pipe", "pipe"],
 		detached: true,
 		env: {
 			...process.env,
@@ -82,10 +82,18 @@ function spawnSubagent(prompt: string, cwd: string): void {
 
 	activeSubagentProc = proc;
 
+	// Capture output for debugging
+	let debugOutput = "";
+	proc.stdout?.on("data", (d: Buffer) => { debugOutput += d.toString(); });
+	proc.stderr?.on("data", (d: Buffer) => { debugOutput += d.toString(); });
+
 	// 🛡️ Absolute kill timer — no subagent should run more than 60 seconds
 	activeKillTimer = setTimeout(() => {
 		if (proc && !proc.killed) {
 			proc.kill("SIGTERM");
+			// Log what it was stuck on
+			const fs = require("node:fs");
+			try { fs.writeFileSync("/tmp/pi-scratch-ESS1Rm/auto-dream-timeout.log", debugOutput.slice(-2000)); } catch {}
 		}
 		activeSubagentProc = null;
 		activeKillTimer = null;
