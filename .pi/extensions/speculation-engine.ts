@@ -16,6 +16,15 @@ const READONLY_BASH_PREFIXES = [
 	"env ", "printenv", "uname", "date", "whoami",
 ];
 
+// Bash commands that modify state even if they look harmless
+const STATE_MODIFYING_PATTERNS = [
+	/\bcd\b/, /\bexport\b/, /\bsource\b/, /\bunset\b/, /\balias\b/,
+	/\bmkdir\b/, /\btouch\b/, /\brm\b/, /\bmv\b/, /\bcp\b/,
+	/\bchmod\b/, /\bchown\b/, /\bln\b/, /\bsed\s+-i/, /\bawk\b.*>/, 
+	/>>/, />[^&]/, /\bkill\b/, /\bpkill\b/, /\bnpm\b/, /\byarn\b/,
+	/\bgit\s+(add|commit|push|checkout|reset|rebase|merge|stash|branch\s+-[dD])/,
+];
+
 // ─── State ───
 let pendingSpeculationPrompt: string | null = null;
 let activeSpecProc: ChildProcess | null = null;
@@ -104,9 +113,17 @@ function killActiveSpeculation(): void {
 }
 
 // ─── Helper: check if bash command is read-only ───
+// Claude Code uses checkReadOnlyConstraints() which checks both a prefix
+// whitelist AND a state-modification blacklist
 function isReadOnlyBash(command: string): boolean {
 	const trimmed = command.trim();
-	// Allow piped commands only if every segment is read-only
+	
+	// First: reject any state-modifying patterns regardless of prefix
+	for (const pattern of STATE_MODIFYING_PATTERNS) {
+		if (pattern.test(trimmed)) return false;
+	}
+	
+	// Then: check every segment against the prefix whitelist
 	const segments = trimmed.split(/\s*[|&;]\s*/);
 	return segments.every(seg => {
 		const s = seg.trim();
@@ -396,17 +413,30 @@ export default function speculationEngine(pi: ExtensionAPI) {
 				}
 
 				// Parse JSON stream output for assistant text content
+				// Claude Code: prepareMessagesForInjection() strips thinking blocks,
+				// failed tool_results, interrupt messages, and empty content
 				let assistantText = "";
 				for (const line of result.split("\n")) {
 					if (!line.trim()) continue;
 					try {
-						const event = JSON.parse(line);
-						if (event.type === "message_end" && event.message?.role === "assistant") {
-							const textBlock = event.message.content?.find((c: any) => c.type === "text");
-							if (textBlock?.text) {
-								assistantText += textBlock.text + "\n";
+						const evt = JSON.parse(line);
+						if (evt.type === "message_end" && evt.message?.role === "assistant") {
+							const content = evt.message.content || [];
+							for (const block of content) {
+								// Skip thinking blocks (waste tokens post-injection)
+								if (block.type === "thinking") continue;
+								// Skip tool_use blocks (they reference overlay paths)
+								if (block.type === "tool_use") continue;
+								// Skip empty text
+								if (block.type === "text" && (!block.text || !block.text.trim())) continue;
+								// Keep valid text content
+								if (block.type === "text" && block.text) {
+									assistantText += block.text + "\n";
+								}
 							}
 						}
+						// Also skip tool_result messages entirely (they contain overlay paths)
+						// Only inject clean assistant text
 					} catch { /* not JSON */ }
 				}
 
