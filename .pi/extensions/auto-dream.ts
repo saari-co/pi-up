@@ -47,9 +47,24 @@ function getPiCommand(): { command: string; args: string[] } {
  * Fire-and-forget — we don't wait for completion or read output.
  * Matches Claude Code's pattern: forked agent with skipTranscript.
  */
+// 🛡️ Kill timer for subagents (Claude Code pattern: abort controller)
+const SUBAGENT_TIMEOUT_MS = 60_000; // 60 seconds max for memory extraction
+let activeSubagentProc: ReturnType<typeof spawn> | null = null;
+let activeKillTimer: ReturnType<typeof setTimeout> | null = null;
+
 function spawnSubagent(prompt: string, cwd: string): void {
+	// 🛡️ Kill any existing subagent before spawning a new one
+	if (activeSubagentProc && !activeSubagentProc.killed) {
+		activeSubagentProc.kill("SIGTERM");
+	}
+	if (activeKillTimer) {
+		clearTimeout(activeKillTimer);
+		activeKillTimer = null;
+	}
+
 	const pi = getPiCommand();
-	const args = [...pi.args, "--mode", "json", "-p", "--no-session", prompt];
+	const dreamModel = process.env.PI_DREAM_MODEL || "gemini-2.5-flash";
+	const args = [...pi.args, "--model", dreamModel, "--mode", "json", "--no-session", "-p", prompt];
 
 	const currentDepth = parseInt(process.env.PI_SUBAGENT_DEPTH || "0", 10);
 
@@ -63,6 +78,25 @@ function spawnSubagent(prompt: string, cwd: string): void {
 			PI_IS_SUBAGENT: "true",
 			PI_SUBAGENT_DEPTH: (currentDepth + 1).toString(),
 		},
+	});
+
+	activeSubagentProc = proc;
+
+	// 🛡️ Absolute kill timer — no subagent should run more than 60 seconds
+	activeKillTimer = setTimeout(() => {
+		if (proc && !proc.killed) {
+			proc.kill("SIGTERM");
+		}
+		activeSubagentProc = null;
+		activeKillTimer = null;
+	}, SUBAGENT_TIMEOUT_MS);
+
+	proc.on("close", () => {
+		if (activeKillTimer) {
+			clearTimeout(activeKillTimer);
+			activeKillTimer = null;
+		}
+		activeSubagentProc = null;
 	});
 
 	// Unref so the child doesn't prevent the parent from exiting
