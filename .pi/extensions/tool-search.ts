@@ -28,6 +28,16 @@ export default function toolSearch(pi: ExtensionAPI) {
 	let activeToolNames: Set<string> = new Set();
 	let initialized = false;
 
+	// 🛡️ CRITICAL: pi.setActiveTools() updates the internal list but does NOT
+	// rebuild the LLM's tool schemas. We must call refreshTools() after every
+	// setActiveTools() call or the model won't see newly activated tools.
+	function activateAndRefresh(names: Set<string>) {
+		pi.setActiveTools([...names]);
+		if ((pi as any).refreshTools) {
+			(pi as any).refreshTools();
+		}
+	}
+
 	pi.on("session_start", async (_event, _ctx) => {
 		setTimeout(() => initDeferred(), 500);
 	});
@@ -55,7 +65,7 @@ export default function toolSearch(pi: ExtensionAPI) {
 		activeToolNames = new Set(toActivate);
 
 		if (deferredToolNames.length > 0) {
-			pi.setActiveTools([...activeToolNames]);
+			activateAndRefresh(activeToolNames);
 			initialized = true;
 		}
 	}
@@ -137,7 +147,7 @@ export default function toolSearch(pi: ExtensionAPI) {
 				}
 
 				if (found.length > 0) {
-					pi.setActiveTools([...activeToolNames]);
+					activateAndRefresh(activeToolNames);
 				}
 
 				const lines: string[] = [];
@@ -200,7 +210,7 @@ export default function toolSearch(pi: ExtensionAPI) {
 			for (const name of matches) {
 				activeToolNames.add(name);
 			}
-			pi.setActiveTools([...activeToolNames]);
+			activateAndRefresh(activeToolNames);
 
 			return {
 				content: [{ type: "text", text: "Found and activated: " + matches.join(", ") + "\nThese tools are now callable. Remaining deferred: " + (currentlyDeferred.length - matches.length) }],
@@ -253,7 +263,7 @@ export default function toolSearch(pi: ExtensionAPI) {
 			for (const name of allToolNames) {
 				activeToolNames.add(name);
 			}
-			pi.setActiveTools([...activeToolNames]);
+			activateAndRefresh(activeToolNames);
 			ctx.ui.notify("All " + allToolNames.length + " tools activated.", "success");
 		},
 	});
