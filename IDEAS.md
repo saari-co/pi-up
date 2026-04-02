@@ -279,7 +279,143 @@ The coordinator system prompt is ~4000 tokens of detailed orchestration instruct
 
 ---
 
-## Priority Matrix
+## Tier 4: Discovered in Deep Dive (April 2026)
+
+### 23. `/commit` Command — Smart Git Commit
+**Source:** `commands/commit.ts`
+**What it does:** Analyzes staged/unstaged changes, recent commit history, and branch context, then drafts a commit message matching the repo's style. Follows strict git safety: never amends, never skips hooks, never commits secrets. Uses heredoc syntax for multi-line messages. Includes commit attribution.
+
+**Pi implementation:** A skill that runs `git status`, `git diff HEAD`, `git log --oneline -10`, `git branch --show-current` and then stages and commits with a well-crafted message. Very useful as a daily driver.
+
+---
+
+### 24. `/review` Command — PR Code Review
+**Source:** `commands/review.ts`
+**What it does:** Reviews pull requests using `gh pr view` and `gh pr diff`. Analyzes code quality, project conventions, performance, security, and test coverage. Can target a specific PR by number or list open PRs.
+
+**Pi implementation:** A skill that takes an optional PR number, fetches the diff via `gh`, and runs a thorough review. Simpler than ultrareview but focused on PR workflow.
+
+---
+
+### 25. `/doctor` Command — Installation Diagnostics
+**Source:** `commands/doctor/`
+**What it does:** Diagnoses the Claude Code installation — checks settings files, API connectivity, model availability, permissions, hooks, and MCP servers. Reports issues with concrete fix suggestions.
+
+**Pi implementation:** An extension that registers `/doctor` command. Checks: pi version, settings.json validity, extension load errors, model API key availability, git status, node version. Reports a health card.
+
+---
+
+### 26. `/context` Command — Context Usage Visualizer
+**Source:** `commands/context/`
+**What it does:** Visualizes current context window usage as a colored grid. Shows token breakdown by system prompt, tools, messages, and remaining space. Non-interactive mode returns text stats.
+
+**Pi implementation:** An extension using `ctx.getContextUsage()` to get token counts, then renders a visual bar or grid via `ctx.ui.custom()`. Shows what's consuming context.
+
+---
+
+### 27. `/export` Command — Conversation Export
+**Source:** `commands/export/`
+**What it does:** Exports the current conversation to a file or clipboard. Supports multiple formats.
+
+**Pi implementation:** An extension that reads `ctx.sessionManager.getEntries()`, serializes to markdown or JSON, writes to file or copies to clipboard via `pbcopy`/`xclip`.
+
+---
+
+### 28. `/diff` Command — Visual Diff Viewer
+**Source:** `commands/diff/`
+**What it does:** Shows uncommitted changes and per-turn diffs with syntax highlighting. Lets you see what changed in each turn of the conversation.
+
+**Pi implementation:** An extension that runs `git diff` and renders with color-coded additions/deletions. Could also track per-turn diffs by comparing git state at turn boundaries (using git-checkpoint data).
+
+---
+
+### 29. `/cost` Command — Session Cost Tracker
+**Source:** `commands/cost/`
+**What it does:** Shows total cost and duration of the current session. Breaks down by input/output/cache tokens.
+
+**Pi implementation:** An extension that tracks token usage from assistant message `usage` fields across the session. Display via command or status bar. Uses `ctx.sessionManager.getEntries()` to sum costs.
+
+---
+
+### 30. AutoDream — Background Memory Consolidation
+**Source:** `services/autoDream/`, `services/autoDream/consolidationPrompt.ts`
+**What it does:** Fires a "/dream" prompt as a forked subagent when enough sessions accumulate. Reads session transcripts, synthesizes learnings into durable memory files. Three phases: Orient (ls memory dir, read index), Gather (scan transcripts for new signal), Consolidate (update memory files). Merges, deduplicates, converts relative dates to absolute.
+
+**Pi implementation:** A skill or extension that periodically reviews session history and updates memory files. Could run on session_start if enough time has passed since last consolidation. The consolidation prompt is gold.
+
+---
+
+### 31. Away Summary — "While You Were Away" Card
+**Source:** `services/awaySummary.ts`
+**What it does:** When user returns after stepping away, generates a 1-3 sentence recap. Uses a fast model on the last 30 messages plus session memory. States the high-level task and the concrete next step.
+
+**Pi implementation:** An extension that hooks `session_start` or detects idle gaps. If the session has history but user has been away (time gap > threshold), generate a brief recap and show as a notification or widget.
+
+---
+
+### 32. `/stuck` Skill — Diagnose Frozen Sessions
+**Source:** `skills/bundled/stuck.ts`
+**What it does:** Investigates frozen/stuck/slow sessions. Runs `ps` to find Claude processes, checks CPU/RSS/state, looks for hung child processes, samples stack traces. Reports findings.
+
+**Pi implementation:** A skill that runs `ps`, `pgrep`, and process analysis to find stuck pi processes, high CPU, zombie processes, or hung git/node subprocesses.
+
+---
+
+### 33. `/loop` Skill — Recurring Prompt Scheduler
+**Source:** `skills/bundled/loop.ts`
+**What it does:** Syntactic sugar for scheduling recurring prompts: `/loop 5m /babysit-prs` or `/loop check the deploy every 20m`. Parses interval from leading token or trailing "every" clause, delegates to the cron scheduler.
+
+**Pi implementation:** A skill (or addition to cron-scheduler extension) that parses the natural-language interval syntax and creates a cron task. Much nicer UX than raw `/cron add`.
+
+---
+
+### 34. ToolSearch — Deferred Tool Loading
+**Source:** `tools/ToolSearchTool/`
+**What it does:** Tools are loaded on-demand rather than all at startup. Only tool names appear in context initially. When the model needs a tool, it calls ToolSearch to fetch the full schema. Reduces baseline token consumption dramatically.
+
+**Pi implementation:** An extension that uses `pi.setActiveTools()` to start with a minimal set, then dynamically activates tools when the LLM requests them via a `tool_search` custom tool. Could save significant context tokens.
+
+---
+
+### 35. WebSearch Tool — Native Web Search
+**Source:** `tools/WebSearchTool/`
+**What it does:** Native web search via Anthropic's API (not scraping). Returns search results with links. Requires sources section in response. Domain filtering supported.
+
+**Pi implementation:** Could wrap a search API (Brave, SerpAPI, or Tavily) in a custom tool. Different from web_fetch (which fetches a known URL) — this searches the open web.
+
+---
+
+### 36. NotebookEdit Tool — Jupyter Notebook Editing
+**Source:** `tools/NotebookEditTool/`
+**What it does:** Edit Jupyter notebook cells by cell ID. Handles the JSON structure of .ipynb files so the model can modify individual cells without corrupting the notebook.
+
+**Pi implementation:** A custom tool that parses .ipynb JSON, lets the LLM edit cells by ID, and writes back valid notebook JSON. Useful for data science workflows.
+
+---
+
+## Priority Matrix (Updated)
+
+| # | Feature | Status | Impact | Effort |
+|---|---------|--------|--------|--------|
+| 1-22 | Original features | BUILT | — | — |
+| 23 | `/commit` command | NEW | Very High | Low |
+| 24 | `/review` command | NEW | Very High | Low |
+| 25 | `/doctor` diagnostics | NEW | High | Low |
+| 26 | `/context` visualizer | NEW | High | Medium |
+| 27 | `/export` conversation | NEW | Medium | Low |
+| 28 | `/diff` visual viewer | NEW | Medium | Medium |
+| 29 | `/cost` tracker | NEW | Medium | Low |
+| 30 | AutoDream memory | NEW | Very High | High |
+| 31 | Away Summary | NEW | High | Medium |
+| 32 | `/stuck` diagnostics | NEW | Medium | Low |
+| 33 | `/loop` scheduler | NEW | Medium | Very Low |
+| 34 | ToolSearch deferred | NEW | Very High | High |
+| 35 | WebSearch native | NEW | High | Medium |
+| 36 | NotebookEdit tool | NEW | Medium | Medium |
+
+---
+
+## Original Priority Matrix
 
 | # | Feature | Impact | Effort | Dependencies |
 |---|---------|--------|--------|-------------|
