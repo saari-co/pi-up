@@ -17,14 +17,16 @@ function toPlanPrompt(text: string): string {
 }
 
 export default function ultraplan(pi: ExtensionAPI) {
-	pi.on("input", (_ctx, ev) => {
-		const text = ev.text.trim();
+	pi.on("input", async (event, _ctx) => {
+		const text = event.text;
+		if (!text) return;
+		const trimmed = text.trim();
 		let body: string | null = null;
 
-		if (text.toLowerCase().startsWith("plan ")) {
-			body = text.slice(5).trim();
-		} else if (text.toLowerCase().startsWith("plan:")) {
-			body = text.slice(5).trim();
+		if (trimmed.toLowerCase().startsWith("plan ")) {
+			body = trimmed.slice(5).trim();
+		} else if (trimmed.toLowerCase().startsWith("plan:")) {
+			body = trimmed.slice(5).trim();
 		}
 
 		if (body) {
@@ -33,11 +35,14 @@ export default function ultraplan(pi: ExtensionAPI) {
 	});
 
 	pi.registerCommand("ultraplan", {
-		description: "Enter plan mode — analyze a request and produce a numbered execution plan without modifying files",
-		execute: (_ctx, args) => {
-			const body = args.trim();
-			if (!body) return "Usage: /ultraplan <request>";
-			return { action: "transform" as const, text: toPlanPrompt(body) };
+		description: "Enter plan mode - analyze a request and produce a numbered execution plan without modifying files",
+		handler: async (args, _ctx) => {
+			const body = (args || "").trim();
+			if (!body) {
+				_ctx.ui.notify("Usage: /ultraplan <request>", "info");
+				return;
+			}
+			pi.sendUserMessage(toPlanPrompt(body));
 		},
 	});
 }
