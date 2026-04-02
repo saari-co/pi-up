@@ -268,7 +268,7 @@ async function runWorker(
 				...process.env, 
 				PI_IS_SUBAGENT: "true", 
 				PI_SUBAGENT_DEPTH: ((parseInt(process.env.PI_SUBAGENT_DEPTH || "0", 10)) + 1).toString(),
-				PI_MODEL: "claude-3-5-sonnet",
+				PI_MODEL: process.env.PI_BATCH_MODEL || "gemini-2.5-flash",
 				// 🛡️ Subagent Sandboxing: Lock this worker to only the files it was assigned
 				PI_ALLOWED_PATHS: unit.files.join(",")
 			}, // Mark as sub-agent and use cheaper model

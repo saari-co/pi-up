@@ -162,8 +162,8 @@ export default function speculationEngine(pi: ExtensionAPI) {
 
 			// 🛡️ Spawn with full guardrails
 			// Use cheaper model for speculation (Claude Code uses CLAUDE_CODE_SUBAGENT_MODEL)
-			// Defaults to claude-3-5-sonnet, override with PI_SPECULATION_MODEL env var
-			const speculationModel = process.env.PI_SPECULATION_MODEL || "claude-3-5-sonnet";
+			// Defaults to gemini-flash, override with PI_SPECULATION_MODEL env var
+			const speculationModel = process.env.PI_SPECULATION_MODEL || "gemini-2.5-flash";
 
 			const proc = spawn(process.argv[0], [process.argv[1]!, ...spawnArgs], {
 				env: {
