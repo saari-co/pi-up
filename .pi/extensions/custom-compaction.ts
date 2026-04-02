@@ -77,6 +77,30 @@ Rules:
 - Do NOT invent or hallucinate information not present in the conversation`;
 
 export default function (pi: ExtensionAPI) {
+	pi.on("before_agent_start", async (event, ctx) => {
+		const branch = ctx.sessionManager.getBranch();
+		const compactions = branch.filter(e => e.type === "compaction_summary").length;
+		
+		if (compactions > 0) {
+			// Skill Dehydration (#41)
+			// Truncate <available_skills> listing to save ~4k tokens per turn post-compaction
+			const sys = event.systemPrompt;
+			const skillsStart = sys.indexOf("<available_skills>");
+			const skillsEnd = sys.indexOf("</available_skills>");
+			
+			if (skillsStart !== -1 && skillsEnd !== -1) {
+				const before = sys.substring(0, skillsStart);
+				const after = sys.substring(skillsEnd + "</available_skills>".length);
+				
+				const dehydratedSkills = "<available_skills>\n[Skills listing dehydrated post-compaction to save tokens. Use tool_search or reference your previously used skills.]\n</available_skills>";
+				
+				return {
+					systemPrompt: before + dehydratedSkills + after
+				};
+			}
+		}
+	});
+
 	pi.on("session_before_compact", async (event, ctx) => {
 		ctx.ui.notify("Custom compaction: generating structured 9-section summary...", "info");
 
@@ -96,8 +120,38 @@ export default function (pi: ExtensionAPI) {
 			return;
 		}
 
+		// PTL Lossy Escape Hatch (#42)
+		// If tokens exceed a reasonable fallback limit, explicitly slice the oldest user/assistant blocks.
+		const PTL_THRESHOLD = 180000;
+		if (tokensBefore > PTL_THRESHOLD) {
+			const trimCount = Math.floor(messagesToSummarize.length / 3);
+			messagesToSummarize.splice(0, trimCount);
+			ctx.ui.notify(`[PTL Escape Hatch] Truncated ${trimCount} messages for compaction retry`, "warning");
+			
+			// Inject the truncation marker into the new oldest message if it's text
+			const oldestMessage = messagesToSummarize[0];
+			if (oldestMessage && typeof oldestMessage.content === "string") {
+				oldestMessage.content = "[earlier conversation truncated for compaction retry]\n\n" + oldestMessage.content;
+			}
+		}
+
 		const allMessages = [...messagesToSummarize, ...turnPrefixMessages];
-		const conversationText = serializeConversation(convertToLlm(allMessages));
+		
+		// Image Stripper (#8)
+		const textOnlyMessages = allMessages.map((msg) => {
+			if (msg.role === "user" && Array.isArray(msg.content)) {
+				return {
+					...msg,
+					content: msg.content.map((block: any) =>
+						block.type === "image" ? { type: "text", text: "[Image attached by user removed for compaction]" } : block
+					),
+				};
+			}
+			return msg;
+		});
+
+		// @ts-ignore
+		const conversationText = serializeConversation(convertToLlm(textOnlyMessages));
 
 		const previousContext = previousSummary
 			? `\n\nA previous compaction summary exists. Incorporate its information where relevant:\n<previous_summary>\n${previousSummary}\n</previous_summary>`

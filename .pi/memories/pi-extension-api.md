@@ -71,3 +71,6 @@ const model = ctx.modelRegistry.current();
 ```typescript
 const { stdout, stderr, code, killed } = await pi.exec("git", ["status"]);
 ```
+
+## Dynamic Tool Activation
+When dynamically activating tools (e.g., via a search tool), do not just push string names to an active tools array. You must ensure the SDK actually builds the JSON schema for the newly active tools via `pi.setActiveTools()`. Also, note that orchestrators like `batch_orchestrator` may currently require a hard restart to pick up dynamically injected schemas.
