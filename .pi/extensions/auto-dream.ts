@@ -1,62 +1,235 @@
 /**
- * AutoDream Memory Consolidation Extension
+ * AutoDream — Background Memory Extraction & Consolidation
  *
- * Background memory consolidation inspired by Claude Code's services/autoDream/.
- * On session start, checks time and session gates to decide if consolidation is needed.
- * If gates pass, injects a consolidation prompt as a followUp message.
+ * Modeled after Claude Code's extractMemories + autoDream:
  *
- * Registers /dream command for manual consolidation runs.
- * Writes timestamp to .pi/dream-last-run on completion.
+ * 1. **Extract (per-turn):** After each agent turn, spawns a background
+ *    memory-extractor subagent (separate pi process) that analyzes the
+ *    last N messages and writes durable memories to .pi/memories/.
+ *
+ * 2. **Consolidate (/dream):** On-demand deep consolidation that reads
+ *    session transcripts and reorganizes the memory directory.
+ *
+ * The subagent pattern matches Claude Code's runForkedAgent — a separate
+ * pi process in JSON mode with --no-session, so it has isolated context
+ * and doesn't pollute the main conversation.
+ *
+ * Source: services/extractMemories/extractMemories.ts, services/autoDream/
  */
 
 import type { ExtensionAPI } from "@mariozechner/pi-coding-agent";
+import { spawn } from "node:child_process";
 import * as fs from "node:fs";
 import * as path from "node:path";
 
-const MEMORY_ROOT = ".pi/memories";
+// ─── Config ───
+
+const MEMORY_DIR = ".pi/memories";
+const INDEX_FILE = "index.md";
 const TIMESTAMP_FILE = ".pi/dream-last-run";
-const HOURS_THRESHOLD = 24;
-const MIN_SESSIONS = 3;
+const EXTRACT_COOLDOWN_MS = 60_000; // Min 1 min between extractions
+const CONSOLIDATION_HOURS = 24;
+const MIN_SESSIONS_FOR_DREAM = 3;
+const MAX_RECENT_MESSAGES = 30;
 
-function buildConsolidationPrompt(memoryRoot: string, sessionDir: string): string {
-	return `You are performing a background memory consolidation pass. Follow these 4 phases exactly:
+// ─── Subagent runner ───
 
-## Phase 1: Orient
-- List all files in \`${memoryRoot}/\` to understand current memory state.
-- Read \`${memoryRoot}/index.md\` if it exists to see the memory index.
-- If the memory directory doesn't exist, create it with an empty \`index.md\`.
-
-## Phase 2: Gather
-- Search session transcripts in \`${sessionDir}/\` for new signals:
-  - User corrections ("don't", "instead", "actually", "I prefer")
-  - Explicit preferences and project conventions
-  - Discovered facts about the codebase (languages, frameworks, patterns)
-  - Recurring themes across multiple sessions
-- Use grep with narrow terms, don't read whole files.
-
-## Phase 3: Consolidate
-- For each new signal found:
-  - If a related memory file already exists, update it (merge, don't duplicate).
-  - If it's genuinely new, create a new memory file in \`${memoryRoot}/\`.
-  - Use descriptive filenames like \`user-pref-testing.md\`, \`project-stack.md\`.
-- Update \`${memoryRoot}/index.md\` to reference all memory files with one-line summaries.
-- Convert relative dates to absolute dates.
-
-## Phase 4: Prune
-- If \`${memoryRoot}/index.md\` exceeds 25KB, consolidate related entries.
-- Merge memories that overlap significantly.
-- Remove memories that are superseded or no longer relevant.
-
-After completing all phases, output a brief summary of what changed.`;
+function getPiCommand(): { command: string; args: string[] } {
+	const currentScript = process.argv[1];
+	if (currentScript && fs.existsSync(currentScript)) {
+		return { command: process.execPath, args: [currentScript] };
+	}
+	return { command: "pi", args: [] };
 }
 
-function readTimestamp(cwd: string): Date | null {
+/**
+ * Spawn a background pi subagent process that runs a prompt and exits.
+ * Fire-and-forget — we don't wait for completion or read output.
+ * Matches Claude Code's pattern: forked agent with skipTranscript.
+ */
+function spawnSubagent(prompt: string, cwd: string): void {
+	const pi = getPiCommand();
+	const args = [...pi.args, "--mode", "json", "-p", "--no-session", prompt];
+
+	const proc = spawn(pi.command, args, {
+		cwd,
+		shell: false,
+		stdio: ["ignore", "ignore", "ignore"],
+		detached: true,
+	});
+
+	// Unref so the child doesn't prevent the parent from exiting
+	proc.unref();
+}
+
+// ─── Memory directory helpers ───
+
+function ensureMemoryDir(cwd: string): string {
+	const dir = path.join(cwd, MEMORY_DIR);
+	fs.mkdirSync(dir, { recursive: true });
+	return dir;
+}
+
+function readMemoryManifest(cwd: string): string {
+	const dir = path.join(cwd, MEMORY_DIR);
+	if (!fs.existsSync(dir)) return "(empty — no memories yet)";
+
 	try {
-		const content = fs.readFileSync(path.join(cwd, TIMESTAMP_FILE), "utf8").trim();
-		const d = new Date(content);
-		return isNaN(d.getTime()) ? null : d;
+		const files = fs.readdirSync(dir).filter((f) => f.endsWith(".md"));
+		if (files.length === 0) return "(empty — no memories yet)";
+
+		const manifest: string[] = [];
+		for (const file of files) {
+			const content = fs.readFileSync(path.join(dir, file), "utf8");
+			const firstLine = content.split("\n").find((l) => l.startsWith("# ")) || file;
+			manifest.push(`- ${file}: ${firstLine.replace(/^#\s*/, "").slice(0, 80)}`);
+		}
+		return manifest.join("\n");
+	} catch {
+		return "(could not read memory directory)";
+	}
+}
+
+// ─── Extract: runs after each agent turn ───
+
+function buildExtractionPrompt(
+	recentMessages: string,
+	memoryDir: string,
+	existingMemories: string,
+): string {
+	return `You are the memory extraction subagent. Analyze the recent conversation below and save any durable memories.
+
+## Memory directory
+${memoryDir}/
+${existingMemories}
+
+## What to save
+- **user** — Personal preferences, communication style, workflow habits
+- **feedback** — Corrections ("don't do X"), rejected approaches, style steering
+- **project** — Tech stack, conventions, build commands, architecture decisions
+- **reference** — Server addresses, API endpoints, team roles
+
+## What NOT to save
+- Transient task state, code patterns derivable from codebase, info already in AGENTS.md
+
+## How to save
+1. Read existing memory files first to avoid duplicates.
+2. Write/update files in ${memoryDir}/ with frontmatter: type, date.
+3. Update ${memoryDir}/${INDEX_FILE} with one-line pointers.
+4. If nothing worth saving, just output "No new memories." and stop.
+5. Work in 2 turns max: read existing → write updates.
+
+## Recent conversation to analyze
+${recentMessages}`;
+}
+
+function serializeRecentEntries(entries: any[], maxEntries: number): string {
+	const recent = entries.slice(-maxEntries);
+	const lines: string[] = [];
+
+	for (const entry of recent) {
+		if (entry.type !== "message") continue;
+		const msg = entry.message;
+		if (!msg) continue;
+
+		if (msg.role === "user") {
+			let text = "";
+			if (typeof msg.content === "string") text = msg.content;
+			else if (Array.isArray(msg.content)) {
+				for (const b of msg.content) {
+					if (b.type === "text") { text += (b as any).text + "\n"; }
+				}
+			}
+			if (text.trim()) {
+				lines.push(`[User]: ${text.trim().slice(0, 500)}`);
+			}
+		} else if (msg.role === "assistant" && Array.isArray(msg.content)) {
+			for (const b of msg.content) {
+				if (b.type === "text") {
+					lines.push(`[Assistant]: ${((b as any).text || "").slice(0, 500)}`);
+				}
+			}
+		}
+	}
+
+	return lines.join("\n\n");
+}
+
+// ─── Consolidation: deep review of sessions + memory reorg ───
+
+function buildConsolidationPrompt(memoryDir: string, sessionDir: string): string {
+	return `# Dream: Memory Consolidation
+
+You are performing a dream — a reflective pass over your memory files. Synthesize what you've learned recently into durable, well-organized memories.
+
+Memory directory: ${memoryDir}/
+
+## Phase 1 — Orient
+- List all files in the memory directory.
+- Read ${INDEX_FILE} to understand the current index.
+- Skim existing topic files so you improve them rather than creating duplicates.
+
+## Phase 2 — Gather recent signal
+Search session transcripts in ${sessionDir}/ for new information:
+- User corrections and preferences
+- Project conventions and architecture facts
+- Recurring patterns across sessions
+Use grep with narrow terms. Don't read whole transcript files.
+
+## Phase 3 — Consolidate
+- Merge new signal into existing topic files (don't duplicate).
+- Convert relative dates to absolute dates.
+- Delete contradicted facts.
+- Create new files only for genuinely new topics.
+
+## Phase 4 — Prune and index
+- Update ${INDEX_FILE}: one line per entry, under ~150 chars each.
+- Keep under 200 lines and 25KB.
+- Remove stale pointers, resolve contradictions.
+
+Return a brief summary of what you consolidated, updated, or pruned.`;
+}
+
+function findSessionDir(): string | null {
+	const home = process.env.HOME || "";
+	const baseDir = path.join(home, ".pi", "agent", "sessions");
+	if (!fs.existsSync(baseDir)) return null;
+
+	try {
+		const dirs = fs.readdirSync(baseDir);
+		// Find dir matching current project
+		const cwd = process.cwd();
+		for (const d of dirs) {
+			const decoded = d.replace(/--/g, "/");
+			if (cwd.includes(decoded.slice(1, 30))) {
+				return path.join(baseDir, d);
+			}
+		}
+		return dirs.length > 0 ? path.join(baseDir, dirs[dirs.length - 1]) : null;
 	} catch {
 		return null;
+	}
+}
+
+function shouldConsolidate(cwd: string): boolean {
+	const tsFile = path.join(cwd, TIMESTAMP_FILE);
+	try {
+		const content = fs.readFileSync(tsFile, "utf8").trim();
+		const lastRun = new Date(content);
+		if (isNaN(lastRun.getTime())) return true;
+		const hoursSince = (Date.now() - lastRun.getTime()) / 3_600_000;
+		if (hoursSince < CONSOLIDATION_HOURS) return false;
+	} catch {
+		// No timestamp = never run
+	}
+
+	const sessionDir = findSessionDir();
+	if (!sessionDir) return false;
+	try {
+		const files = fs.readdirSync(sessionDir).filter((f) => f.endsWith(".jsonl"));
+		return files.length >= MIN_SESSIONS_FOR_DREAM;
+	} catch {
+		return false;
 	}
 }
 
@@ -66,81 +239,46 @@ function writeTimestamp(cwd: string): void {
 	fs.writeFileSync(path.join(cwd, TIMESTAMP_FILE), new Date().toISOString() + "\n");
 }
 
-function countSessionFiles(sessionBaseDir: string): number {
-	try {
-		if (!fs.existsSync(sessionBaseDir)) return 0;
-		const files = fs.readdirSync(sessionBaseDir);
-		return files.filter((f) => f.endsWith(".jsonl")).length;
-	} catch {
-		return 0;
-	}
-}
-
-function findSessionDir(): string | null {
-	// Pi stores sessions in ~/.pi/agent/sessions/<sanitized-cwd>/
-	const homeDir = process.env.HOME || process.env.USERPROFILE || "";
-	const baseDir = path.join(homeDir, ".pi", "agent", "sessions");
-	if (!fs.existsSync(baseDir)) return null;
-
-	// Find the directory matching current cwd
-	const cwd = process.cwd().replace(/\//g, "-").replace(/^-/, "-");
-	try {
-		const dirs = fs.readdirSync(baseDir);
-		for (const d of dirs) {
-			if (cwd.includes(d.slice(1, 20)) || d.includes("pi-up")) {
-				return path.join(baseDir, d);
-			}
-		}
-		// Fallback: return the most recently modified session dir
-		if (dirs.length > 0) {
-			return path.join(baseDir, dirs[dirs.length - 1]);
-		}
-	} catch {
-		// ignore
-	}
-	return baseDir;
-}
-
-function shouldConsolidate(cwd: string): boolean {
-	const lastRun = readTimestamp(cwd);
-
-	// Time gate
-	if (lastRun) {
-		const hoursSince = (Date.now() - lastRun.getTime()) / 3_600_000;
-		if (hoursSince < HOURS_THRESHOLD) return false;
-	}
-
-	// Session gate
-	const sessionDir = findSessionDir();
-	if (!sessionDir) return false;
-	const count = countSessionFiles(sessionDir);
-	return count >= MIN_SESSIONS;
-}
-
-let dreamTriggeredThisSession = false;
+// ─── Extension ───
 
 export default function autoDream(pi: ExtensionAPI) {
+	let lastExtractionTime = 0;
+	let extractionEnabled = true;
+
+	// After each agent turn, spawn a background extraction subagent
+	pi.on("agent_end", async (event, ctx) => {
+		if (!extractionEnabled) return;
+
+		// Cooldown: don't extract more than once per minute
+		const now = Date.now();
+		if (now - lastExtractionTime < EXTRACT_COOLDOWN_MS) return;
+		lastExtractionTime = now;
+
+		// Get recent messages for the extraction prompt
+		const entries = ctx.sessionManager.getEntries();
+		if (entries.length < 4) return; // Need meaningful conversation
+
+		const recentText = serializeRecentEntries(entries, MAX_RECENT_MESSAGES);
+		if (recentText.length < 100) return; // Too little content
+
+		const memDir = ensureMemoryDir(ctx.cwd);
+		const manifest = readMemoryManifest(ctx.cwd);
+		const prompt = buildExtractionPrompt(recentText, memDir, manifest);
+
+		// Fire-and-forget: spawn a background pi process
+		spawnSubagent(prompt, ctx.cwd);
+	});
+
+	// On session start, check if full consolidation is needed
 	pi.on("session_start", async (_event, ctx) => {
-		dreamTriggeredThisSession = false;
-
 		if (shouldConsolidate(ctx.cwd)) {
-			dreamTriggeredThisSession = true;
-			if (ctx.hasUI) {
-				ctx.ui.notify("AutoDream: Memory consolidation needed. Use /dream to run.", "info");
-			}
+			ctx.ui.notify("AutoDream: Memory consolidation available. Run /dream to consolidate.", "info");
 		}
 	});
 
-	// Write timestamp after consolidation completes
-	pi.on("agent_end", async (_event, ctx) => {
-		if (dreamTriggeredThisSession) {
-			writeTimestamp(ctx.cwd);
-			dreamTriggeredThisSession = false;
-		}
-	});
-
+	// /dream command — full consolidation via subagent
 	pi.registerCommand("dream", {
-		description: "Run memory consolidation — review sessions and update persistent memories",
+		description: "Run deep memory consolidation — review sessions and reorganize memories",
 		handler: async (_args, ctx) => {
 			const sessionDir = findSessionDir();
 			if (!sessionDir) {
@@ -148,13 +286,58 @@ export default function autoDream(pi: ExtensionAPI) {
 				return;
 			}
 
-			dreamTriggeredThisSession = true;
-			const prompt = buildConsolidationPrompt(
-				path.join(ctx.cwd, MEMORY_ROOT),
-				sessionDir,
-			);
+			const memDir = ensureMemoryDir(ctx.cwd);
+			const prompt = buildConsolidationPrompt(memDir, sessionDir);
+
+			// For consolidation, we run it in the foreground so user sees progress
 			pi.sendUserMessage(prompt, { deliverAs: "followUp" });
-			ctx.ui.notify("AutoDream: Consolidation prompt queued.", "info");
+			writeTimestamp(ctx.cwd);
+			ctx.ui.notify("Dream: Consolidation started.", "info");
+		},
+	});
+
+	// /dream-bg command — consolidation via background subagent
+	pi.registerCommand("dream-bg", {
+		description: "Run memory consolidation silently in the background",
+		handler: async (_args, ctx) => {
+			const sessionDir = findSessionDir();
+			if (!sessionDir) {
+				ctx.ui.notify("No session directory found.", "warning");
+				return;
+			}
+
+			const memDir = ensureMemoryDir(ctx.cwd);
+			const prompt = buildConsolidationPrompt(memDir, sessionDir);
+
+			spawnSubagent(prompt, ctx.cwd);
+			writeTimestamp(ctx.cwd);
+			ctx.ui.notify("Dream: Background consolidation spawned.", "info");
+		},
+	});
+
+	// /memories command — show current memory state
+	pi.registerCommand("memories", {
+		description: "Show current persistent memories",
+		handler: async (_args, ctx) => {
+			const manifest = readMemoryManifest(ctx.cwd);
+			ctx.ui.notify("Persistent Memories\n" + "─".repeat(20) + "\n" + manifest, "info");
+		},
+	});
+
+	// /dream-off and /dream-on — toggle extraction
+	pi.registerCommand("dream-off", {
+		description: "Disable automatic memory extraction",
+		handler: async (_args, ctx) => {
+			extractionEnabled = false;
+			ctx.ui.notify("AutoDream: Extraction disabled for this session.", "info");
+		},
+	});
+
+	pi.registerCommand("dream-on", {
+		description: "Enable automatic memory extraction",
+		handler: async (_args, ctx) => {
+			extractionEnabled = true;
+			ctx.ui.notify("AutoDream: Extraction enabled.", "info");
 		},
 	});
 }
