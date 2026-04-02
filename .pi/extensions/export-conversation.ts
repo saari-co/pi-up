@@ -93,7 +93,7 @@ export default function exportConversation(pi: ExtensionAPI) {
 			writeFileSync(outPath, content, "utf-8");
 
 			if (ctx.hasUI) {
-				ctx.ui.notify(`Conversation exported to ${outPath}`);
+				ctx.ui.notify(`Conversation exported to ${outPath}`, "success");
 			}
 		},
 	});

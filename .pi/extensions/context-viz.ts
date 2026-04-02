@@ -81,7 +81,7 @@ export default function contextViz(pi: ExtensionAPI) {
 		handler: async (_args, ctx) => {
 			const usage = ctx.getContextUsage();
 			if (!usage) {
-				ctx.ui.notify("Context usage data not available (no model or context window).", "warn");
+				ctx.ui.notify("Context usage data not available (no model or context window).", "warning");
 				return;
 			}
 			ctx.ui.notify(renderContextDisplay(usage), "info");
