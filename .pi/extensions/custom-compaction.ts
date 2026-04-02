@@ -97,7 +97,20 @@ export default function (pi: ExtensionAPI) {
 		}
 
 		const allMessages = [...messagesToSummarize, ...turnPrefixMessages];
-		const conversationText = serializeConversation(convertToLlm(allMessages));
+		const llmMessages = convertToLlm(allMessages);
+
+		// Strip image blocks before serialization to save tokens and avoid errors
+		const strippedMessages = llmMessages.map((msg) => {
+			if (!Array.isArray(msg.content)) return msg;
+			return {
+				...msg,
+				content: msg.content.map((part) =>
+					part.type === "image" ? { type: "text" as const, text: "[Image removed for compaction]" } : part,
+				),
+			};
+		});
+
+		const conversationText = serializeConversation(strippedMessages);
 
 		const previousContext = previousSummary
 			? `\n\nA previous compaction summary exists. Incorporate its information where relevant:\n<previous_summary>\n${previousSummary}\n</previous_summary>`
