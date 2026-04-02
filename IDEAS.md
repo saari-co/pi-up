@@ -80,7 +80,23 @@ It's a skill that creates skills. Self-replicating workflows.
 
 ## Tier 2: Medium Impact — Worth Building
 
-### 6. `/verify` Skill — End-to-End Verification
+### 6. MicroCompact — Silent Context Trimming
+**Source:** `services/compact/microCompact.ts`
+**What it does:** Silently trims the output of specific tools *while* you're working, rather than waiting for a full session compaction. It watches tools that generate large text blocks (like `grep`, `cat`, or shell commands). If their output is old (defined by `timeBasedMCConfig`), it quietly replaces the output in the context window with `[Old tool result content cleared]` to save tokens without interrupting the flow.
+**Pi implementation:** An extension that hooks `context` or `before_provider_request`. It would scan the message history for large tool results from previous turns and replace their content strings with a cleared marker.
+
+### 7. SessionMemoryCompact — Invariant-Preserving Summarization
+**Source:** `services/compact/sessionMemoryCompact.ts`
+**What it does:** A new compaction algorithm (gated in Claude Code behind `tengu_session_memory`). Instead of replacing old messages with a static summary block, it generates a continuous "Session Memory" document appended over time. Crucially, it calculates exactly which messages to keep based on `adjustIndexToPreserveAPIInvariants`, ensuring it never accidentally deletes a `tool_use` block while stranding its corresponding `tool_result`.
+**Pi implementation:** A more advanced version of our `custom-compaction.ts` extension. Instead of just returning a summary string, it would precisely select which recent messages to preserve intact based on unresolved tool chains, while summarizing the rest.
+
+### 8. Image Stripper for Compaction
+**Source:** `services/compact/compact.ts`
+**What it does:** Actively strips all image blocks from the transcript and replaces them with a text marker *before* sending the history to the LLM for summarization.
+**Why:** Compaction uses an LLM call. Sending 5 screenshots to the summarizer model burns massive tokens and risks `prompt_too_long` errors.
+**Pi implementation:** Update our `custom-compaction.ts` to filter out `type: "image"` blocks from the messages array before calling `serializeConversation()`.
+
+### 9. `/verify` Skill — End-to-End Verification
 **Source:** `skills/bundled/verify.ts`, `skills/bundled/verifyContent.ts`
 **What it does:** After implementing something, actually runs the app and verifies it works. Not just tests — actual end-to-end verification: start the dev server, hit the endpoints, click through the UI, check screenshots. Ant-only currently but the concept is universal.
 
@@ -477,3 +493,45 @@ The coordinator system prompt is ~4000 tokens of detailed orchestration instruct
 **Phase 5 — Fun:**
 21. Buddy companion
 22. Thinkback replay
+
+## Tier 5: Advanced Subagent Architecture (April 2026 Deep Dive)
+
+### 37. Prompt Cache Inheritance (Zero-Cost Spawns)
+**Source:** `utils/forkedAgent.ts`
+**What it does:** Subagents inherit the exact same `systemPrompt`, `toolUseContext`, and `forkContextMessages` as the leader. Because the mathematical prefix is identical, the API registers a 100% Prompt Cache Hit, dropping the input token cost of spawning an army of agents by ~90%.
+**Pi implementation:** When spawning a subagent, export the current session history or use `pi --fork` so the subagent has the identical message prefix, then append the subagent's task instruction.
+
+### 38. Subagent Sandboxing (TeamAllowedPath)
+**Source:** `utils/swarm/teamHelpers.ts`
+**What it does:** Prevents background agents from destroying the project. A team leader can lock a worker so it is only allowed to use the `Edit` tool inside `/src/frontend/`. If the worker tries to edit `backend.ts`, the permission system blocks it.
+**Pi implementation:** Pass `PI_ALLOWED_PATHS` environment variable to subagents. Modify `claude-core.ts` to intercept `edit`, `write`, and `bash` calls, blocking paths that fall outside the sandbox.
+
+### 39. In-Process Subagents
+**Source:** `utils/swarm/inProcessRunner.ts`
+**What it does:** Instead of spawning heavy `child_process` binaries, Claude Code defaults to running subagents directly inside the main Node thread using `AsyncLocalStorage` to isolate their state.
+**Pi implementation:** Use `ctx.model.stream()` inside an extension to run secondary conversation loops headlessly. Saves memory and latency for simple background research tasks that don't need a separate Git worktree.
+
+### 40. Speculation Engine (Zero-Latency Ghost Agent)
+**Source:** `services/PromptSuggestion/speculation.ts`
+**What it does:** While you are typing or idle, a background agent guesses what you'll ask next. It uses an "Overlay Filesystem" (`/tmp/claude/speculation/`) to do fake edits. If you hit Enter and the prompts match, it instantly applies the cached edits to your real repo.
+**Pi implementation:** A TUI hook or `input` event interceptor that spawns a ghost agent. Intercept `edit`/`write`/`bash` to redirect paths to `/tmp/pi-speculation/`.
+
+### 41. Skill "Dehydration" (Context Savings)
+**Source:** `services/compact/compact.ts`, `tools/SkillTool/prompt.ts`
+**What it does:** Claude Code has a "Skill Listing" that defines all available skills (~4k tokens). After the first compaction, they intentionally *stop* re-injecting the full text of skills that weren't invoked in the recent conversation, replacing them with just a name and description.
+**Pi implementation:** Modify `session-memory-compact.ts`. If `ctx.sessionManager.getBranch()` shows previous compactions, intercept the system prompt and strip out the full text of `SKILL.md` files that haven't been invoked recently.
+
+### 42. PTL (Prompt Too Long) "Lossy" Escape Hatch
+**Source:** `services/compact/compact.ts` -> `truncateHeadForPTLRetry`
+**What it does:** If a conversation gets so big that the compaction request itself fails (exceeds 200k limit), Claude Code identifies the token gap and iteratively deletes the oldest API rounds (User/Assistant/Tool triplets) until the request fits. It prepends `[earlier conversation truncated for compaction retry]` to prevent stuck loops.
+**Pi implementation:** Update the compaction routine. Wrap the summarization LLM call in a try/catch or token-check. If it exceeds limits, explicitly slice the oldest messages and prepend the truncation marker.
+
+### 43. Content "Stubbing" with Read Markers
+**Source:** `tools/FileReadTool/prompt.ts` -> `FILE_UNCHANGED_STUB`
+**What it does:** When reading massive files, it truncates the content to a fixed token limit and appends a marker: `[... content truncated; use Read if you need the full text]`. It keeps the "scent" of the file in context without paying for the full body.
+**Pi implementation:** Update the `read` tool (or intercept `tool_result` via `micro-compact.ts`) to slice strings > 50KB and append the stub marker.
+
+### 44. API-Native "Micro-Compaction" (Clear Tool Uses)
+**Source:** `services/compact/apiMicrocompact.ts`
+**What it does:** Uses a beta Anthropic API feature (`clear_tool_uses_20250919`) that allows the client to tell the API to delete specific tool results from its prompt cache memory directly. Targets High-I/O tools like grep, ls, and read.
+**Pi implementation:** This requires Anthropic API support. As a fallback, our `micro-compact.ts` extension actively overwrites the string payloads of old `toolResult` blocks before sending the request.

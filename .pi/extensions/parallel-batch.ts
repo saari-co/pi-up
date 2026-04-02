@@ -207,10 +207,16 @@ async function removeWorktree(gitRoot: string, worktreePath: string, branch: str
 
 function getPiInvocation(args: string[]): { command: string; args: string[] } {
 	const currentScript = process.argv[1];
+	
+	// The `--fork` argument is passed as ["--fork", "path/to/file.jsonl"]. 
+	// We need to check if the array contains "--fork" and filter out "--no-session"
+	const hasFork = args.includes("--fork");
+	const safeArgs = hasFork ? args.filter(a => a !== "--no-session") : args;
+
 	if (currentScript && fs.existsSync(currentScript)) {
-		return { command: process.execPath, args: [currentScript, ...args] };
+		return { command: process.execPath, args: [currentScript, ...safeArgs] };
 	}
-	return { command: "pi", args };
+	return { command: "pi", args: safeArgs };
 }
 
 function getFinalOutput(messages: Message[]): string {
@@ -233,6 +239,7 @@ async function runWorker(
 	unit: WorkerUnit,
 	worktree: WorktreeInfo,
 	prompt: string,
+	sessionFile: string | undefined,
 	signal: AbortSignal | undefined,
 	onUpdate?: (result: WorkerResult) => void,
 ): Promise<WorkerResult> {
@@ -245,10 +252,12 @@ async function runWorker(
 		usage: { input: 0, output: 0, cost: 0, turns: 0 },
 	};
 
-	const args: string[] = ["--mode", "json", "-p", "--no-session", prompt];
+	const args: string[] = ["--mode", "json", "-p", "--no-session"];
+	if (sessionFile) {
+		args.push("--fork", sessionFile);
+	}
+	args.push(prompt);
 	const invocation = getPiInvocation(args);
-
-	const currentDepth = parseInt(process.env.PI_SUBAGENT_DEPTH || "0", 10);
 
 	const exitCode = await new Promise<number>((resolve) => {
 		const proc = spawn(invocation.command, invocation.args, {
@@ -258,9 +267,10 @@ async function runWorker(
 			env: { 
 				...process.env, 
 				PI_IS_SUBAGENT: "true", 
-				PI_SUBAGENT_DEPTH: (currentDepth + 1).toString(),
-				PI_MODEL: "claude-3-5-sonnet" 
-			},
+				PI_MODEL: "claude-3-5-sonnet",
+				// 🛡️ Subagent Sandboxing: Lock this worker to only the files it was assigned
+				PI_ALLOWED_PATHS: unit.files.join(",")
+			}, // Mark as sub-agent and use cheaper model
 		});
 
 		let buffer = "";
@@ -284,7 +294,10 @@ async function runWorker(
 							if (usage) {
 								result.usage.input += usage.input || 0;
 								result.usage.output += usage.output || 0;
-								result.usage.cost += usage.cost?.total || 0;
+								// 🛡️ ACCURATE COST TRACKING: Include cache costs
+								const cacheReadCost = (usage as any).cacheReadCost || 0;
+								const cacheWriteCost = (usage as any).cacheWriteCost || 0;
+								result.usage.cost += (usage.cost?.total || 0) + cacheReadCost + cacheWriteCost;
 							}
 						}
 						onUpdate?.(result);
@@ -349,7 +362,9 @@ async function runWorker(
 async function runWorkersParallel(
 	units: WorkerUnit[],
 	worktrees: WorktreeInfo[],
-	buildPrompt: (unit: WorkerUnit) => string,
+	buildImplPrompt: (unit: WorkerUnit) => string,
+	buildVerifyPrompt: (unit: WorkerUnit) => string,
+	sessionFile: string | undefined,
 	signal: AbortSignal | undefined,
 	onUpdate: (results: WorkerResult[]) => void,
 ): Promise<WorkerResult[]> {
@@ -374,17 +389,61 @@ async function runWorkersParallel(
 			const idx = nextIndex++;
 			if (idx >= units.length) return;
 
-			const prompt = buildPrompt(units[idx]);
-			results[idx] = await runWorker(
+			// ─── Phase 1: Implement ───
+			const implPrompt = buildImplPrompt(units[idx]);
+			const implResult = await runWorker(
 				units[idx],
 				worktrees[idx],
-				prompt,
+				implPrompt,
+				sessionFile,
 				signal,
 				(partial) => {
 					results[idx] = partial;
 					onUpdate(results);
 				},
 			);
+
+			if (implResult.exitCode !== 0 || implResult.output.includes("FAILED:")) {
+				results[idx] = implResult;
+				onUpdate(results);
+				continue; // Skip verification if implementation failed
+			}
+
+			// ─── Phase 2: Adversarial Verification ───
+			const verifyPrompt = buildVerifyPrompt(units[idx]);
+			const verifyResult = await runWorker(
+				units[idx],
+				worktrees[idx],
+				verifyPrompt,
+				sessionFile,
+				signal,
+				(partial) => {
+					results[idx] = {
+						...partial,
+						output: implResult.output + "\n\n--- VERIFICATION PHASE ---\n\n" + partial.output,
+						messages: [...implResult.messages, ...partial.messages],
+						usage: {
+							input: implResult.usage.input + partial.usage.input,
+							output: implResult.usage.output + partial.usage.output,
+							cost: implResult.usage.cost + partial.usage.cost,
+							turns: implResult.usage.turns + partial.usage.turns,
+						},
+					};
+					onUpdate(results);
+				},
+			);
+
+			results[idx] = {
+				...verifyResult,
+				output: implResult.output + "\n\n--- VERIFICATION PHASE ---\n\n" + verifyResult.output,
+				messages: [...implResult.messages, ...verifyResult.messages],
+				usage: {
+					input: implResult.usage.input + verifyResult.usage.input,
+					output: implResult.usage.output + verifyResult.usage.output,
+					cost: implResult.usage.cost + verifyResult.usage.cost,
+					turns: implResult.usage.turns + verifyResult.usage.turns,
+				},
+			};
 			onUpdate(results);
 		}
 	});
@@ -429,11 +488,6 @@ export default function parallelBatch(pi: ExtensionAPI) {
 		}),
 
 		async execute(_toolCallId, params, signal, onUpdate, ctx) {
-			// 🛡️ Guard against subagent recursion
-			if (process.env.PI_IS_SUBAGENT === "true" || process.env.PI_SUBAGENT_DEPTH) {
-				throw new Error("Cannot run batch_orchestrate from within a subagent.");
-			}
-
 			// Validate git repo
 			const gitRoot = await findGitRoot(ctx.cwd);
 			if (!gitRoot) {
@@ -476,9 +530,8 @@ export default function parallelBatch(pi: ExtensionAPI) {
 			};
 
 			// Build worker prompts
-			const buildPrompt = (unit: WorkerUnit): string => {
-				const testCmd = params.test_command || "npm test";
-				return `You are batch worker ${unit.index}/${units.length} for: ${params.instruction}
+			const buildImplPrompt = (unit: WorkerUnit): string => {
+				return `You are the IMPLEMENTATION subagent for batch unit ${unit.index}/${units.length} for: ${params.instruction}
 
 ## Your Unit: ${unit.title}
 
@@ -491,9 +544,28 @@ ${unit.files.map((f) => `- ${f}`).join("\n")}
 ${params.conventions}
 
 ### Workflow
-1. Implement the change described above
+1. Implement the change described above. Ensure you ONLY touch the files relevant to your unit.
 2. Review your changes for code reuse, quality, and efficiency issues. Fix any you find.
-3. Run tests: \`${testCmd}\` — fix failures if related to your changes
+3. Stop. Do NOT run tests yet, and do NOT commit. The Verification agent will do that next.
+4. End your response with exactly: "IMPLEMENTATION COMPLETE" or "FAILED: <reason>"`;
+			};
+
+			const buildVerifyPrompt = (unit: WorkerUnit): string => {
+				const testCmd = params.test_command || "npm test";
+				return `You are the VERIFICATION subagent for batch unit ${unit.index}/${units.length}.
+The Implementation agent has just finished editing files in this worktree for: ${params.instruction}
+
+## Your Unit: ${unit.title}
+
+${unit.description}
+
+### Files modified
+${unit.files.map((f) => `- ${f}`).join("\n")}
+
+### Verification Workflow
+1. Inspect the git diff (\`git diff\`). Verify the changes correctly implement the request and don't contain obvious errors.
+2. If you spot mistakes, fix them directly in the files.
+3. Run tests: \`${testCmd}\` — fix failures if related to the changes.
 4. Commit: \`git add -A && git commit -m "batch(${unit.title.toLowerCase().replace(/\s+/g, "-")}): ${unit.title}"\`
 5. Push: \`git push origin HEAD\`
 6. Create PR if \`gh\` is available: \`gh pr create --title "${unit.title}" --body "Part of batch: ${params.instruction}" --head ${worktrees[unit.index - 1].branch}\`
@@ -503,20 +575,42 @@ End your response with exactly one of:
 - \`PR: <url>\` if PR was created
 - \`PUSHED: <branch>\` if pushed without PR
 - \`COMMITTED: <sha>\` if committed but couldn't push
-- \`FAILED: <reason>\` if you couldn't complete the work`;
+- \`FAILED: <reason>\` if verification or tests failed completely`;
 			};
 
 			// Emit initial status
 			onUpdate?.({
-				content: [{ type: "text", text: `Batch ${batchId}: launching ${units.length} workers (${MAX_CONCURRENCY} concurrent)...` }],
+				content: [{ type: "text", text: `Batch ${batchId}: launching ${units.length} workers (${MAX_CONCURRENCY} concurrent) with Implement+Verify pattern...` }],
 				details: { action: "running", state: currentBatch } as BatchToolDetails,
 			});
+
+			const currentSessionFile = ctx.sessionManager.getSessionFile();
+			let tempSessionFile: string | undefined;
+
+			if (currentSessionFile) {
+				tempSessionFile = path.join(os.tmpdir(), `pi-batch-cache-${batchId}.jsonl`);
+				try {
+					const sessionContent = await fs.promises.readFile(currentSessionFile, "utf-8");
+					const lines = sessionContent.split("\n");
+					if (lines.length > 0 && lines[lines.length - 1].trim() === "") {
+						lines.pop();
+					}
+					if (lines.length > 0 && lines[lines.length - 1].includes("batch_orchestrate")) {
+						lines.pop();
+					}
+					await fs.promises.writeFile(tempSessionFile, lines.join("\n") + "\n", "utf-8");
+				} catch (err) {
+					throw new Error(`Failed to create temp session file: ${err instanceof Error ? err.message : String(err)}`);
+				}
+			}
 
 			// Run workers
 			const results = await runWorkersParallel(
 				units,
 				worktrees,
-				buildPrompt,
+				buildImplPrompt,
+				buildVerifyPrompt,
+				tempSessionFile,
 				signal,
 				(partialResults) => {
 					const running = partialResults.filter((r) => r.exitCode === -1).length;
