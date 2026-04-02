@@ -511,8 +511,8 @@ The coordinator system prompt is ~4000 tokens of detailed orchestration instruct
 **What it does:** Instead of spawning heavy `child_process` binaries, Claude Code defaults to running subagents directly inside the main Node thread using `AsyncLocalStorage` to isolate their state.
 **Pi implementation:** Use `ctx.model.stream()` inside an extension to run secondary conversation loops headlessly. Saves memory and latency for simple background research tasks that don't need a separate Git worktree.
 
-### 40. Speculation Engine (Zero-Latency Ghost Agent)
-**Source:** `services/PromptSuggestion/speculation.ts`
+### 40. Speculation Engine (Zero-Latency Ghost Agent) [ANT-ONLY]
+**Source:** `services/PromptSuggestion/speculation.ts` (Anthropic Internal)
 **What it does:** While you are typing or idle, a background agent guesses what you'll ask next. It uses an "Overlay Filesystem" (`/tmp/claude/speculation/`) to do fake edits. If you hit Enter and the prompts match, it instantly applies the cached edits to your real repo.
 **Pi implementation:** A TUI hook or `input` event interceptor that spawns a ghost agent. Intercept `edit`/`write`/`bash` to redirect paths to `/tmp/pi-speculation/`.
 
@@ -561,8 +561,8 @@ The coordinator system prompt is ~4000 tokens of detailed orchestration instruct
 - Cleans up orphaned tool_result blocks with no matching tool_use
 **Pi implementation:** New extension `post-compact-cleanup.ts` hooking `session_after_compact`.
 
-### 47. Coordinator Mode with Dispatch-Only Agent
-**Source:** `coordinator/coordinatorMode.ts`
+### 47. Coordinator Mode with Dispatch-Only Agent [ANT-ONLY]
+**Source:** `coordinator/coordinatorMode.ts` (Anthropic Internal)
 **What it does:** A session mode where the agent becomes a pure orchestrator:
 - Can ONLY use `dispatch_agent`, `send_message`, and `task_stop` tools
 - Cannot use read/edit/bash directly — must delegate to workers
@@ -594,57 +594,57 @@ The coordinator system prompt is ~4000 tokens of detailed orchestration instruct
 
 These features are gated behind `USER_TYPE === 'ant'` in Claude Code source and only available to Anthropic employees. We can implement all of them for Pi.
 
-### 51. REPLTool — Persistent Interactive Runtime
-**Source:** `tools/REPLTool/` (ant-only, gated behind `tengu_repl_mode`)
+### 51. REPLTool — Persistent Interactive Runtime [ANT-ONLY]
+**Source:** `tools/REPLTool/` (Gated behind `tengu_repl_mode`)
 **What it does:** Instead of spawning a fresh `bash` process for every tool call, REPLTool keeps a persistent Python, Node, or shell process alive across turns. Commands are piped into stdin, output read from stdout. Eliminates cold-start overhead (~200ms per bash call) and allows stateful operations (variables, imports, connections persist between turns). Supports multiple concurrent REPL sessions.
 **Pi implementation:** New extension `repl-tool.ts` with a `repl` tool that spawns persistent child processes keyed by language. Track active sessions, auto-kill on session end.
 
-### 52. /commit-push-pr — One-Shot Git Workflow
+### 52. /commit-push-pr — One-Shot Git Workflow [ANT-ONLY]
 **Source:** `commands.ts` (INTERNAL_ONLY_COMMANDS)
 **What it does:** Single command that chains: `git add -A` → `git commit -m <msg>` → `git push origin HEAD` → `gh pr create`. No manual steps, no forgetting to push. Generates commit message from staged diff using the LLM.
 **Pi implementation:** New skill `commit-push-pr/` or extension command. Chain existing `/commit` skill with programmatic push and `gh pr create`.
 
-### 53. /bughunter — Automated Bug Scanning Mode
+### 53. /bughunter — Automated Bug Scanning Mode [ANT-ONLY]
 **Source:** `commands.ts` (INTERNAL_ONLY_COMMANDS)
 **What it does:** Enters a mode where the agent systematically scans the codebase for bugs, security vulnerabilities, and code smells. Uses multi-pass analysis: first pass identifies files of interest, second pass deep-reads them, third pass reports findings with severity and fix suggestions.
 **Pi implementation:** New skill `bughunter/SKILL.md` combining project-analysis + ultrareview patterns.
 
-### 54. /autofix-pr — Auto-Fix PR Review Comments
+### 54. /autofix-pr — Auto-Fix PR Review Comments [ANT-ONLY]
 **Source:** `commands.ts` (INTERNAL_ONLY_COMMANDS)
 **What it does:** Reads PR review comments via `gh` CLI, parses each comment's file/line reference and suggestion, then automatically applies fixes. Commits with a message referencing the review comment. Handles both inline suggestions and general comments.
 **Pi implementation:** New skill `autofix-pr/SKILL.md`. Use `gh pr view --json reviews` to fetch comments, parse file:line references, apply fixes via edit tool.
 
-### 55. /teleport — Cross-Project Context Switch
+### 55. /teleport — Cross-Project Context Switch [ANT-ONLY]
 **Source:** `commands.ts` (INTERNAL_ONLY_COMMANDS)
 **What it does:** Switches the agent's working directory to a different project without losing conversation context. Re-reads the new project's AGENTS.md/README, injects project architecture as a system message, and continues the conversation with awareness of both projects.
 **Pi implementation:** New extension command `/teleport <path>`. Change `process.cwd()`, read new AGENTS.md if present, inject context via `sendMessage()`.
 
-### 56. /force-snip — Force Context Truncation
+### 56. /force-snip — Force Context Truncation [ANT-ONLY]
 **Source:** `commands.ts` (INTERNAL_ONLY_COMMANDS)
 **What it does:** Immediately triggers compaction regardless of context size. Useful when the conversation is getting unfocused or the agent is confused by old context. Runs the full compaction pipeline (microcompact → LLM summary → postCompactCleanup).
 **Pi implementation:** New extension command `/snip`. Trigger `session_before_compact` event manually, run compaction pipeline.
 
-### 57. /break-cache — Force Prompt Cache Invalidation
+### 57. /break-cache — Force Prompt Cache Invalidation [ANT-ONLY]
 **Source:** `commands.ts` (INTERNAL_ONLY_COMMANDS)
 **What it does:** Mutates the system prompt slightly (appends a random token or timestamp) to force the API to invalidate the prompt cache. Useful when cached responses are stale or the model is stuck in a loop.
 **Pi implementation:** New extension command `/break-cache`. Append a `<!-- cache-bust: <timestamp> -->` comment to the system prompt, then remove it on next turn.
 
-### 58. Computer Use — Screen Control
-**Source:** `utils/computerUse/gates.ts`, `tools/ComputerTool/`
+### 58. Computer Use — Screen Control [ANT-ONLY]
+**Source:** `utils/computerUse/gates.ts`, `tools/ComputerTool/` (Gated behind `tengu_computer_use`)
 **What it does:** Uses Anthropic's Computer Use API to control the screen: take screenshots, move mouse, click buttons, type text. Gated behind `tengu_computer_use` feature flag. Allows the agent to interact with GUIs, browsers, and desktop apps.
 **Pi implementation:** New extension `computer-use.ts`. Requires Anthropic API with computer use beta. Register `computer` tool that takes screenshots via `screencapture`/`scrot`, sends to API, returns action coordinates.
 
-### 59. Undercover Mode — Dogfooding Mode
-**Source:** `utils/undercover.ts`
+### 59. Undercover Mode — Dogfooding Mode [ANT-ONLY]
+**Source:** `utils/undercover.ts` (Anthropic Internal)
 **What it does:** Strips all power-user features and runs the agent in "vanilla" mode as an external user would experience it. Used by Anthropic employees to test the default experience. Disables ant-only tools, commands, model overrides, and analytics.
 **Pi implementation:** New extension command `/undercover`. Disables all pi-up extensions temporarily, runs with only built-in pi tools. `/undercover off` to restore.
 
-### 60. /subscribe-pr — PR Watch Mode
+### 60. /subscribe-pr — PR Watch Mode [ANT-ONLY]
 **Source:** `commands.ts` (INTERNAL_ONLY_COMMANDS)
 **What it does:** Watches a PR for new commits, review comments, or status changes. When activity is detected, injects a notification into the conversation so the agent can react (e.g., auto-fix new review comments).
 **Pi implementation:** New extension `pr-watcher.ts`. Use `gh pr view --json` on a cron interval (via cron-scheduler), notify on changes.
 
-### 61. /share — Session Sharing
+### 61. /share — Session Sharing [ANT-ONLY]
 **Source:** `commands.ts` (INTERNAL_ONLY_COMMANDS)
 **What it does:** Exports the current conversation as a shareable link or file that another person can load into their own Claude Code session, preserving full context.
 **Pi implementation:** Extend existing `/export` extension. Add a `/share` command that exports to a hosted URL (GitHub Gist) or generates a loadable `.jsonl` session file.
