@@ -84,7 +84,7 @@ export default function (pi: ExtensionAPI) {
 		const { messagesToSummarize, turnPrefixMessages, tokensBefore, firstKeptEntryId, previousSummary } = preparation;
 
 		// Use the current conversation model
-		const model = ctx.modelRegistry.current();
+		const model = ctx.model;
 		if (!model) {
 			ctx.ui.notify("No current model available, falling back to default compaction", "warning");
 			return;
