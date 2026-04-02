@@ -3,161 +3,158 @@
  *
  * Background memory consolidation inspired by Claude Code's services/autoDream/.
  * On session start, checks time and session gates to decide if consolidation is needed.
- * If gates pass, injects a consolidation prompt that walks through 4 phases:
- *   Phase 1: Orient — ls memory dir, read index
- *   Phase 2: Gather — grep session transcripts for new signal
- *   Phase 3: Consolidate — write/update memory files, merge duplicates, fix dates
- *   Phase 4: Prune — keep index under 25KB
+ * If gates pass, injects a consolidation prompt as a followUp message.
  *
  * Registers /dream command for manual consolidation runs.
- * Writes timestamp to .pi/dream-last-run on completion via agent_end hook.
+ * Writes timestamp to .pi/dream-last-run on completion.
  */
 
-import type { ExtensionAPI, ExtensionContext } from "@mariozechner/pi-coding-agent";
+import type { ExtensionAPI } from "@mariozechner/pi-coding-agent";
+import * as fs from "node:fs";
+import * as path from "node:path";
 
-const MEMORY_ROOT = ".pi/memories/";
+const MEMORY_ROOT = ".pi/memories";
 const TIMESTAMP_FILE = ".pi/dream-last-run";
 const HOURS_THRESHOLD = 24;
-const MIN_SESSIONS_SINCE = 3;
+const MIN_SESSIONS = 3;
 
-function buildConsolidationPrompt(memoryRoot: string, transcriptDir: string): string {
+function buildConsolidationPrompt(memoryRoot: string, sessionDir: string): string {
 	return `You are performing a background memory consolidation pass. Follow these 4 phases exactly:
 
 ## Phase 1: Orient
-- List all files in \`${memoryRoot}\` to understand current memory state.
-- Read \`${memoryRoot}index.md\` if it exists to see the memory index.
+- List all files in \`${memoryRoot}/\` to understand current memory state.
+- Read \`${memoryRoot}/index.md\` if it exists to see the memory index.
 - If the memory directory doesn't exist, create it with an empty \`index.md\`.
 
 ## Phase 2: Gather
-- Search session transcripts in \`${transcriptDir}\` for new signals:
+- Search session transcripts in \`${sessionDir}/\` for new signals:
   - User corrections ("don't", "instead", "actually", "I prefer")
   - Explicit preferences and project conventions
   - Discovered facts about the codebase (languages, frameworks, patterns)
   - Recurring themes across multiple sessions
-- Focus on transcripts newer than the last consolidation run.
+- Use grep with narrow terms, don't read whole files.
 
 ## Phase 3: Consolidate
 - For each new signal found:
   - If a related memory file already exists, update it (merge, don't duplicate).
-  - If it's genuinely new, create a new memory file in \`${memoryRoot}\`.
+  - If it's genuinely new, create a new memory file in \`${memoryRoot}/\`.
   - Use descriptive filenames like \`user-pref-testing.md\`, \`project-stack.md\`.
-  - Each memory file should have a clear title, date, and content.
-- Update \`${memoryRoot}index.md\` to reference all memory files with one-line summaries.
-- Fix any stale dates or duplicated entries found during the scan.
+- Update \`${memoryRoot}/index.md\` to reference all memory files with one-line summaries.
+- Convert relative dates to absolute dates.
 
 ## Phase 4: Prune
-- Check the total size of \`${memoryRoot}index.md\`.
-- If it exceeds 25KB, consolidate related entries and remove low-value ones.
+- If \`${memoryRoot}/index.md\` exceeds 25KB, consolidate related entries.
 - Merge memories that overlap significantly.
-- Remove memories that are no longer relevant (superseded corrections, old preferences).
+- Remove memories that are superseded or no longer relevant.
 
 After completing all phases, output a brief summary of what changed.`;
 }
 
-async function readTimestamp(pi: ExtensionAPI): Promise<Date | null> {
+function readTimestamp(cwd: string): Date | null {
 	try {
-		const result = await pi.exec("cat", [TIMESTAMP_FILE]);
-		if (result.code === 0 && result.stdout.trim()) {
-			const ts = new Date(result.stdout.trim());
-			return isNaN(ts.getTime()) ? null : ts;
+		const content = fs.readFileSync(path.join(cwd, TIMESTAMP_FILE), "utf8").trim();
+		const d = new Date(content);
+		return isNaN(d.getTime()) ? null : d;
+	} catch {
+		return null;
+	}
+}
+
+function writeTimestamp(cwd: string): void {
+	const dir = path.dirname(path.join(cwd, TIMESTAMP_FILE));
+	fs.mkdirSync(dir, { recursive: true });
+	fs.writeFileSync(path.join(cwd, TIMESTAMP_FILE), new Date().toISOString() + "\n");
+}
+
+function countSessionFiles(sessionBaseDir: string): number {
+	try {
+		if (!fs.existsSync(sessionBaseDir)) return 0;
+		const files = fs.readdirSync(sessionBaseDir);
+		return files.filter((f) => f.endsWith(".jsonl")).length;
+	} catch {
+		return 0;
+	}
+}
+
+function findSessionDir(): string | null {
+	// Pi stores sessions in ~/.pi/agent/sessions/<sanitized-cwd>/
+	const homeDir = process.env.HOME || process.env.USERPROFILE || "";
+	const baseDir = path.join(homeDir, ".pi", "agent", "sessions");
+	if (!fs.existsSync(baseDir)) return null;
+
+	// Find the directory matching current cwd
+	const cwd = process.cwd().replace(/\//g, "-").replace(/^-/, "-");
+	try {
+		const dirs = fs.readdirSync(baseDir);
+		for (const d of dirs) {
+			if (cwd.includes(d.slice(1, 20)) || d.includes("pi-up")) {
+				return path.join(baseDir, d);
+			}
+		}
+		// Fallback: return the most recently modified session dir
+		if (dirs.length > 0) {
+			return path.join(baseDir, dirs[dirs.length - 1]);
 		}
 	} catch {
-		// File doesn't exist yet
+		// ignore
 	}
-	return null;
+	return baseDir;
 }
 
-async function writeTimestamp(pi: ExtensionAPI): Promise<void> {
-	await pi.exec("mkdir", ["-p", ".pi"]);
-	await pi.exec("bash", ["-c", `echo "${new Date().toISOString()}" > ${TIMESTAMP_FILE}`]);
-}
+function shouldConsolidate(cwd: string): boolean {
+	const lastRun = readTimestamp(cwd);
 
-async function countRecentSessions(pi: ExtensionAPI, since: Date): Promise<number> {
-	// Look for session files newer than the last run
-	const sinceISO = since.toISOString();
-	const result = await pi.exec("bash", [
-		"-c",
-		`find .pi/sessions -type f -newer ${TIMESTAMP_FILE} 2>/dev/null | wc -l`,
-	]);
-	if (result.code === 0) {
-		return parseInt(result.stdout.trim(), 10) || 0;
-	}
-	return 0;
-}
-
-async function getTranscriptDir(pi: ExtensionAPI): Promise<string> {
-	// Use pi's session storage directory for transcripts
-	const result = await pi.exec("bash", ["-c", `ls -d .pi/sessions 2>/dev/null || echo ".pi/sessions"`]);
-	return result.stdout.trim() || ".pi/sessions";
-}
-
-async function shouldConsolidate(pi: ExtensionAPI): Promise<boolean> {
-	// Time gate: check hours since last run
-	const lastRun = await readTimestamp(pi);
+	// Time gate
 	if (lastRun) {
-		const hoursSince = (Date.now() - lastRun.getTime()) / (1000 * 60 * 60);
-		if (hoursSince < HOURS_THRESHOLD) {
-			return false;
-		}
-	}
-	// If no timestamp file exists, first run — check session gate only
-
-	// Session gate: need at least MIN_SESSIONS_SINCE new sessions
-	if (lastRun) {
-		const recentCount = await countRecentSessions(pi, lastRun);
-		if (recentCount < MIN_SESSIONS_SINCE) {
-			return false;
-		}
-	} else {
-		// No prior run — check if there are any sessions at all
-		const result = await pi.exec("bash", ["-c", `find .pi/sessions -type f 2>/dev/null | wc -l`]);
-		const total = parseInt(result.stdout.trim(), 10) || 0;
-		if (total < MIN_SESSIONS_SINCE) {
-			return false;
-		}
+		const hoursSince = (Date.now() - lastRun.getTime()) / 3_600_000;
+		if (hoursSince < HOURS_THRESHOLD) return false;
 	}
 
-	return true;
+	// Session gate
+	const sessionDir = findSessionDir();
+	if (!sessionDir) return false;
+	const count = countSessionFiles(sessionDir);
+	return count >= MIN_SESSIONS;
 }
 
-async function triggerConsolidation(pi: ExtensionAPI, ctx: ExtensionContext): Promise<void> {
-	const transcriptDir = await getTranscriptDir(pi);
-	const prompt = buildConsolidationPrompt(MEMORY_ROOT, transcriptDir);
-	pi.sendUserMessage(prompt);
-	if (ctx.hasUI) {
-		ctx.ui.notify("AutoDream: Memory consolidation triggered");
-	}
-}
-
-let dreamTriggered = false;
+let dreamTriggeredThisSession = false;
 
 export default function autoDream(pi: ExtensionAPI) {
-	// Check consolidation on session start
-	pi.on("session_start", async (ctx: ExtensionContext) => {
-		dreamTriggered = false;
-		const needed = await shouldConsolidate(pi);
-		if (needed) {
-			dreamTriggered = true;
-			await triggerConsolidation(pi, ctx);
+	pi.on("session_start", async (_event, ctx) => {
+		dreamTriggeredThisSession = false;
+
+		if (shouldConsolidate(ctx.cwd)) {
+			dreamTriggeredThisSession = true;
+			if (ctx.hasUI) {
+				ctx.ui.notify("AutoDream: Memory consolidation needed. Use /dream to run.", "info");
+			}
 		}
 	});
 
-	// Write timestamp when agent finishes (if dream was triggered)
-	pi.on("agent_end", async (_ctx: ExtensionContext) => {
-		if (dreamTriggered) {
-			await writeTimestamp(pi);
-			dreamTriggered = false;
+	// Write timestamp after consolidation completes
+	pi.on("agent_end", async (_event, ctx) => {
+		if (dreamTriggeredThisSession) {
+			writeTimestamp(ctx.cwd);
+			dreamTriggeredThisSession = false;
 		}
 	});
 
-	// /dream command — force manual consolidation
 	pi.registerCommand("dream", {
-		description: "Force a memory consolidation run (AutoDream)",
-		args: [],
-		run: async (ctx: ExtensionContext, _args: string[]) => {
-			dreamTriggered = true;
-			await triggerConsolidation(pi, ctx);
-			return "Memory consolidation prompt sent. The agent will now consolidate memories.";
+		description: "Run memory consolidation — review sessions and update persistent memories",
+		handler: async (_args, ctx) => {
+			const sessionDir = findSessionDir();
+			if (!sessionDir) {
+				ctx.ui.notify("No session directory found.", "warning");
+				return;
+			}
+
+			dreamTriggeredThisSession = true;
+			const prompt = buildConsolidationPrompt(
+				path.join(ctx.cwd, MEMORY_ROOT),
+				sessionDir,
+			);
+			pi.sendUserMessage(prompt, { deliverAs: "followUp" });
+			ctx.ui.notify("AutoDream: Consolidation prompt queued.", "info");
 		},
 	});
 }
