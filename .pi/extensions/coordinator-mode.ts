@@ -181,10 +181,18 @@ export default function coordinatorMode(pi: ExtensionAPI) {
 			sessionId = Date.now().toString(36) + Math.random().toString(36).slice(2, 6);
 			clearMailbox();
 			if (ctx.hasUI) {
-				ctx.ui.notify("Coordinator mode activated. Use dispatch_agent to assign tasks.", "success");
+				ctx.ui.notify("🎯 Coordinator Mode Activated\n- Direct tools (bash, read, etc) are BLOCKED.\n- Use dispatch_agent to assign tasks.\n- Use /coordinate-stop to exit.", "success");
 				ctx.ui.setStatus("coordinator", "🎯 Coordinator Mode");
 			}
 		},
+	});
+
+	// Alias for coordinate-stop
+	pi.registerCommand("uncoordinate", {
+		description: "Exit coordinator mode",
+		handler: async (args: string, ctx: any) => {
+			return (pi as any).commands["coordinate-stop"].handler(args, ctx);
+		}
 	});
 
 	// ─── /coordinate-status command ───

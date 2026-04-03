@@ -90,6 +90,11 @@ export default function apiMicrocompact(pi: ExtensionAPI) {
 
 		if (stalePairs.length === 0 && !modified) return undefined;
 
+		if (modified && ctx.hasUI) {
+			ctx.ui.setStatus("microcompact", "🧹 Micro-compacting context");
+			setTimeout(() => ctx.ui.setStatus("microcompact", undefined), 3000);
+		}
+
 		// ─── Strategy 2: Check if Anthropic API supports clear_tool_uses ───
 		const isAnthropic = payload.model?.includes("claude") || 
 			(event.headers && event.headers["x-api-key"]) ||
