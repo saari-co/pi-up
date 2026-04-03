@@ -30,6 +30,11 @@ let pendingSpeculationPrompt: string | null = null;
 let activeSpecProc: ChildProcess | null = null;
 let activeKillTimer: ReturnType<typeof setTimeout> | null = null;
 let speculationSessionId: string | null = null;
+let debounceTimer: ReturnType<typeof setTimeout> | null = null;
+
+// Auto-speculation config
+const DEBOUNCE_MS = 3000;       // Wait 3s after user stops typing
+const MIN_PROMPT_LENGTH = 15;   // Don't speculate on short prompts
 
 // ─── OverlayFS ───
 // Copy-on-write filesystem that redirects writes to /tmp/pi-speculation/<id>/
@@ -133,10 +138,11 @@ function isReadOnlyBash(command: string): boolean {
 }
 
 export default function speculationEngine(pi: ExtensionAPI) {
+	// Store reference to the speculate handler so auto-trigger can call it
+	let speculateHandler: ((args: string, ctx: any) => Promise<void>) | null = null;
+
 	// ─── /speculate command ───
-	pi.registerCommand("speculate", {
-		description: "Fork session to speculate on a prompt in a safe overlay filesystem",
-		handler: async (args: string, ctx: any) => {
+	const handler = async (args: string, ctx: any) => {
 			if (!args) {
 				if (ctx.hasUI) ctx.ui.notify("Usage: /speculate <prompt>", "error");
 				return;
@@ -264,7 +270,13 @@ export default function speculationEngine(pi: ExtensionAPI) {
 					}
 				}
 			});
-		},
+	};
+
+	speculateHandler = handler;
+
+	pi.registerCommand("speculate", {
+		description: "Fork session to speculate on a prompt in a safe overlay filesystem",
+		handler,
 	});
 
 	// ─── /speculate-status command ───
@@ -300,6 +312,48 @@ export default function speculationEngine(pi: ExtensionAPI) {
 				if (ctx.hasUI) ctx.ui.notify("Nothing to cancel.", "info");
 			}
 		},
+	});
+
+	// ─── input_changed hook: auto-speculate while user types (Claude Code pattern) ───
+	pi.on("input_changed" as any, async (event: any, ctx: any) => {
+		// Don't auto-speculate in subagents
+		if (process.env.PI_IS_SUBAGENT === "true" || process.env.PI_SUBAGENT_DEPTH) return;
+		// Don't auto-speculate inside speculation
+		if (process.env.PI_SPECULATE === "true") return;
+
+		const text = (event.text || "").trim();
+
+		// Clear previous debounce
+		if (debounceTimer) {
+			clearTimeout(debounceTimer);
+			debounceTimer = null;
+		}
+
+		// Don't speculate on commands, short text, or empty input
+		if (!text || text.startsWith("/") || text.startsWith("!") || text.length < MIN_PROMPT_LENGTH) {
+			return;
+		}
+
+		// If text changed and speculation is running on a different prompt, kill it
+		if (activeSpecProc && pendingSpeculationPrompt && text !== pendingSpeculationPrompt) {
+			killActiveSpeculation();
+			if (ctx.hasUI) ctx.ui.setStatus("speculation", undefined);
+		}
+
+		// Don't re-trigger if we're already speculating on this exact text
+		if (pendingSpeculationPrompt === text) return;
+
+		// Debounce: wait 3 seconds after user stops typing
+		debounceTimer = setTimeout(() => {
+			debounceTimer = null;
+			// Double-check text is still long enough (user might have deleted)
+			if (text.length >= MIN_PROMPT_LENGTH && !text.startsWith("/") && !text.startsWith("!")) {
+				// Auto-trigger speculation using stored handler reference
+				if (speculateHandler) {
+					speculateHandler(text, ctx);
+				}
+			}
+		}, DEBOUNCE_MS);
 	});
 
 	// ─── tool_call hook: canUseTool() gating + OverlayFS redirect ───
