@@ -384,6 +384,21 @@ export default function speculationEngine(pi: ExtensionAPI) {
 	pi.on("input", async (event: any, ctx: any) => {
 		const text = (event.text || "").trim();
 
+		// Check if speculation finished while we were idle
+		// (Node event loop may not have fired the close callback yet)
+		if (pendingSpeculationPrompt && activeSpecProc) {
+			const resultFile = path.join(OVERLAY_ROOT, "result.txt");
+			if (fs.existsSync(resultFile)) {
+				// Subprocess wrote results but close event hasn't fired yet
+				activeSpecProc = null;
+				if (activeKillTimer) { clearTimeout(activeKillTimer); activeKillTimer = null; }
+				if (ctx.hasUI) {
+					ctx.ui.setStatus("speculation", undefined);
+					ctx.ui.notify("Speculation complete! Type your prompt to accept, or type something else to discard.", "success");
+				}
+			}
+		}
+
 		// 🛡️ Abort-on-new-input: if speculation is still running and user types something
 		// different, kill it immediately (Claude Code pattern: abort controller on keystroke)
 		if (activeSpecProc && text !== pendingSpeculationPrompt) {
