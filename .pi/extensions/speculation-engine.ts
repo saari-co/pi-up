@@ -335,12 +335,20 @@ export default function speculationEngine(pi: ExtensionAPI) {
 		// Guards
 		if (process.env.PI_IS_SUBAGENT === "true" || process.env.PI_SPECULATE === "true") return;
 
-		if (!lastCtx) return;
+		const fsd = require("node:fs");
+		if (!lastCtx) {
+			fsd.appendFileSync("/tmp/pi-spec-debug.log", `${Date.now()} NO CTX\n`);
+			return;
+		}
 
 		const getEditorText = lastCtx.ui?.getEditorText;
-		if (!getEditorText) return;
+		if (!getEditorText) {
+			fsd.appendFileSync("/tmp/pi-spec-debug.log", `${Date.now()} NO getEditorText ui=${!!lastCtx.ui}\n`);
+			return;
+		}
 
 		const text = (getEditorText() || "").trim();
+		fsd.appendFileSync("/tmp/pi-spec-debug.log", `${Date.now()} text="${text.slice(0,30)}" len=${text.length} stable=${stableCount} pending=${pendingSpeculationPrompt?.slice(0,20)} active=${!!activeSpecProc}\n`);
 
 		if (!text || text.startsWith("/") || text.startsWith("!") || text.length < MIN_PROMPT_LENGTH) {
 			lastSeenText = text;
