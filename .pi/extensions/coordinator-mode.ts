@@ -181,18 +181,10 @@ export default function coordinatorMode(pi: ExtensionAPI) {
 			sessionId = Date.now().toString(36) + Math.random().toString(36).slice(2, 6);
 			clearMailbox();
 			if (ctx.hasUI) {
-				ctx.ui.notify("🎯 Coordinator Mode Activated\n- Direct tools (bash, read, etc) are BLOCKED.\n- Use dispatch_agent to assign tasks.\n- Use /coordinate-stop to exit.", "success");
+				ctx.ui.notify("🎯 Coordinator Mode Activated\n- Direct tools (bash, read, etc) are BLOCKED.\n- Use dispatch_agent to assign tasks.\n- Use /uncoordinate to exit.", "success");
 				ctx.ui.setStatus("coordinator", "🎯 Coordinator Mode");
 			}
 		},
-	});
-
-	// Alias for coordinate-stop
-	pi.registerCommand("uncoordinate", {
-		description: "Exit coordinator mode",
-		handler: async (args: string, ctx: any) => {
-			return (pi as any).commands["coordinate-stop"].handler(args, ctx);
-		}
 	});
 
 	// ─── /coordinate-status command ───
@@ -216,8 +208,8 @@ export default function coordinatorMode(pi: ExtensionAPI) {
 		},
 	});
 
-	// ─── /coordinate-stop command ───
-	pi.registerCommand("coordinate-stop", {
+	// ─── /uncoordinate command ───
+	pi.registerCommand("uncoordinate", {
 		description: "Kill all workers and exit coordinator mode",
 		handler: async (_args: string, ctx: any) => {
 			killAllWorkers();
@@ -263,7 +255,7 @@ export default function coordinatorMode(pi: ExtensionAPI) {
 
 			if (getRunningCount() >= MAX_CONCURRENT_WORKERS) {
 				return {
-					content: [{ type: "text", text: `Error: Max concurrent workers (${MAX_CONCURRENT_WORKERS}) reached. Wait for a worker to finish or use /coordinate-stop.` }],
+					content: [{ type: "text", text: `Error: Max concurrent workers (${MAX_CONCURRENT_WORKERS}) reached. Wait for a worker to finish or use /uncoordinate.` }],
 					isError: true,
 				};
 			}
