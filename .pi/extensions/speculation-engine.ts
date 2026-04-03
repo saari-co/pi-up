@@ -344,6 +344,19 @@ export default function speculationEngine(pi: ExtensionAPI) {
 		// Only poll while agent is idle (user is typing)
 		if (agentBusy) return;
 
+		// 🛡️ Safety net: kill any speculation subprocess older than 90s
+		// This catches cases where the setTimeout kill timer gets lost
+		if (activeSpecProc && !activeSpecProc.killed && activeSpecProc.pid) {
+			try {
+				// Check if process is still alive
+				process.kill(activeSpecProc.pid, 0);
+			} catch {
+				// Process is dead, clean up refs
+				activeSpecProc = null;
+				if (activeKillTimer) { clearTimeout(activeKillTimer); activeKillTimer = null; }
+			}
+		}
+
 		const getEditorText = lastCtx.ui?.getEditorText;
 		if (!getEditorText) return;
 
