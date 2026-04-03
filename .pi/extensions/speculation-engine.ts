@@ -321,34 +321,30 @@ export default function speculationEngine(pi: ExtensionAPI) {
 	let stableCount = 0; // how many consecutive polls saw the same text
 	let lastCtx: any = null;
 
+	let agentBusy = false;
+
 	// Capture ctx from every event to ensure we have UI access
 	const captureCtx = async (_event: any, ctx: any) => { if (ctx) lastCtx = ctx; };
-	pi.on("agent_start", captureCtx);
-	pi.on("agent_end", captureCtx);
-	pi.on("turn_end", captureCtx);
+	pi.on("agent_start", async (e: any, ctx: any) => { agentBusy = true; captureCtx(e, ctx); });
+	pi.on("agent_end", async (e: any, ctx: any) => { agentBusy = false; captureCtx(e, ctx); });
+	pi.on("turn_end", async (e: any, ctx: any) => { agentBusy = false; captureCtx(e, ctx); });
 	pi.on("tool_call", captureCtx);
 	pi.on("tool_result", captureCtx);
-	pi.on("input", captureCtx);
+	pi.on("input", async (e: any, ctx: any) => { agentBusy = true; captureCtx(e, ctx); });
 
 	// Write debug on first poll to confirm polling is alive
 	const pollInterval = setInterval(() => {
 		// Guards
 		if (process.env.PI_IS_SUBAGENT === "true" || process.env.PI_SPECULATE === "true") return;
 
-		const fsd = require("node:fs");
-		if (!lastCtx) {
-			fsd.appendFileSync("/tmp/pi-spec-debug.log", `${Date.now()} NO CTX\n`);
-			return;
-		}
+		if (!lastCtx) return;
+		// Only poll while agent is idle (user is typing)
+		if (agentBusy) return;
 
 		const getEditorText = lastCtx.ui?.getEditorText;
-		if (!getEditorText) {
-			fsd.appendFileSync("/tmp/pi-spec-debug.log", `${Date.now()} NO getEditorText ui=${!!lastCtx.ui}\n`);
-			return;
-		}
+		if (!getEditorText) return;
 
 		const text = (getEditorText() || "").trim();
-		fsd.appendFileSync("/tmp/pi-spec-debug.log", `${Date.now()} text="${text.slice(0,30)}" len=${text.length} stable=${stableCount} pending=${pendingSpeculationPrompt?.slice(0,20)} active=${!!activeSpecProc}\n`);
 
 		if (!text || text.startsWith("/") || text.startsWith("!") || text.length < MIN_PROMPT_LENGTH) {
 			lastSeenText = text;
