@@ -511,8 +511,9 @@ The coordinator system prompt is ~4000 tokens of detailed orchestration instruct
 **What it does:** Instead of spawning heavy `child_process` binaries, Claude Code defaults to running subagents directly inside the main Node thread using `AsyncLocalStorage` to isolate their state.
 **Pi implementation:** Use `ctx.model.stream()` inside an extension to run secondary conversation loops headlessly. Saves memory and latency for simple background research tasks that don't need a separate Git worktree.
 
-### 40. Speculation Engine (Zero-Latency Ghost Agent) [ANT-ONLY]
+### 40. Speculation Engine (Zero-Latency Ghost Agent) [ANT-ONLY] [NEEDS SDK: keypress/input_changed event]
 **Source:** `services/PromptSuggestion/speculation.ts` (Anthropic Internal)
+**Status:** Partially implemented. OverlayFS, tool gating, message injection, and subprocess spawning all work. However, the core value proposition (auto-speculate while user types) requires a `keypress` or `input_changed` event from Pi's SDK that doesn't exist yet. Currently only manual `/speculate` trigger, which provides no real benefit over just typing the prompt directly.
 **What it does:** While you are typing or idle, a background agent guesses what you'll ask next. It uses an "Overlay Filesystem" (`/tmp/claude/speculation/`) to do fake edits. If you hit Enter and the prompts match, it instantly applies the cached edits to your real repo.
 **Pi implementation:** A TUI hook or `input` event interceptor that spawns a ghost agent. Intercept `edit`/`write`/`bash` to redirect paths to `/tmp/pi-speculation/`.
 
