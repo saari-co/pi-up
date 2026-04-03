@@ -13,7 +13,9 @@ const MIN_PROMPT_LENGTH = 15;
 const G = global as any;
 G.__PI_SPEC_PROC = G.__PI_SPEC_PROC || null;
 G.__PI_SPEC_TIMER = G.__PI_SPEC_TIMER || null;
-G.__PI_SPEC_POLL = G.__PI_SPEC_POLL || null;
+// Version stamp: each reload gets a unique ID. Old pollers check this and self-terminate.
+const SPEC_VERSION = Date.now();
+G.__PI_SPEC_VERSION = SPEC_VERSION;
 let isSpawningLock = false;
 
 // ─── OverlayFS ───
@@ -90,8 +92,7 @@ export default function speculationEngine(pi: ExtensionAPI) {
 	let lastCtx: any = null;
 	let agentBusy = false;
 
-	// 🛡️ Kill leaked interval
-	if (G.__PI_SPEC_POLL) { clearInterval(G.__PI_SPEC_POLL); G.__PI_SPEC_POLL = null; }
+	// Previous pollers will self-terminate when they see G.__PI_SPEC_VERSION !== their version
 
 	const speculate = async (args: string, ctx: any) => {
 		if (!args || isSpawningLock) return;
@@ -180,14 +181,27 @@ export default function speculationEngine(pi: ExtensionAPI) {
 	pi.on("tool_call", captureCtx);
 	pi.on("tool_result", captureCtx);
 
-	G.__PI_SPEC_POLL = setInterval(() => {
+	// Self-terminating poll loop using setTimeout chain.
+	// Each tick checks if this version is still current. If a reload happened,
+	// G.__PI_SPEC_VERSION will have changed, and this poller stops itself.
+	const myVersion = SPEC_VERSION;
+	function poll() {
+		// Self-terminate if a newer extension loaded
+		if (G.__PI_SPEC_VERSION !== myVersion) return;
+
+		// Schedule next tick FIRST (so we always continue even if logic throws)
+		setTimeout(poll, 1000);
+
 		if (process.env.PI_IS_SUBAGENT === "true" || process.env.PI_SPECULATE === "true" || !lastCtx || agentBusy || isSpawningLock) return;
+
+		// Cleanup dead procs
 		if (G.__PI_SPEC_PROC && !G.__PI_SPEC_PROC.killed && G.__PI_SPEC_PROC.pid) {
 			try { process.kill(G.__PI_SPEC_PROC.pid, 0); } catch {
 				G.__PI_SPEC_PROC = null;
 				if (G.__PI_SPEC_TIMER) { clearTimeout(G.__PI_SPEC_TIMER); G.__PI_SPEC_TIMER = null; }
 			}
 		}
+
 		const getEditorText = lastCtx.ui?.getEditorText;
 		if (!getEditorText) return;
 		const text = (getEditorText() || "").trim();
@@ -204,7 +218,8 @@ export default function speculationEngine(pi: ExtensionAPI) {
 			speculate(text, lastCtx);
 			stableCount = 999;
 		}
-	}, 1000);
+	}
+	setTimeout(poll, 1000);
 
 	pi.on("tool_call", async (event: any) => {
 		if (process.env.PI_SPECULATE !== "true") return undefined;
