@@ -60,7 +60,10 @@ async function runInProcessExtraction(prompt: string, memDir: string, ctx?: any)
 
 		let responseText = "";
 		try {
-			const model = ctx?.getModel?.() || undefined;
+				// Use gemini-2.5-flash for cheap background memory extraction
+			const { getModel } = await import("@mariozechner/pi-ai");
+			const dreamModelId = process.env.PI_DREAM_MODEL || "gemini-2.5-flash";
+			const model = getModel("google", dreamModelId);
 			const stream = streamSimple(model, context);
 			for await (const event of stream) {
 				if (controller.signal.aborted) break;
