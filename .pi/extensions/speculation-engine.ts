@@ -314,46 +314,63 @@ export default function speculationEngine(pi: ExtensionAPI) {
 		},
 	});
 
-	// ─── input_changed hook: auto-speculate while user types (Claude Code pattern) ───
-	pi.on("input_changed" as any, async (event: any, ctx: any) => {
-		// Don't auto-speculate in subagents
-		if (process.env.PI_IS_SUBAGENT === "true" || process.env.PI_SUBAGENT_DEPTH) return;
-		// Don't auto-speculate inside speculation
-		if (process.env.PI_SPECULATE === "true") return;
+	// ─── Auto-speculate: poll editor text every second (Claude Code pattern) ───
+	// Pi's SDK doesn't expose a keystroke event, so we poll the editor text
+	// via the getEditorText() function exposed on the extension context.
+	let lastSeenText = "";
+	let stableCount = 0; // how many consecutive polls saw the same text
+	let lastCtx: any = null;
 
-		const text = (event.text || "").trim();
+	// Capture ctx from multiple events to get UI access
+	pi.on("agent_start", async (_event: any, ctx: any) => { lastCtx = ctx; });
+	pi.on("agent_end", async (_event: any, ctx: any) => { lastCtx = ctx; });
+	pi.on("turn_end", async (_event: any, ctx: any) => { if (ctx) lastCtx = ctx; });
 
-		// Clear previous debounce
-		if (debounceTimer) {
-			clearTimeout(debounceTimer);
-			debounceTimer = null;
-		}
+	const pollInterval = setInterval(() => {
+		// Guards
+		if (process.env.PI_IS_SUBAGENT === "true" || process.env.PI_SPECULATE === "true") return;
+		if (!lastCtx) return;
 
-		// Don't speculate on commands, short text, or empty input
-		if (!text || text.startsWith("/") || text.startsWith("!") || text.length < MIN_PROMPT_LENGTH) {
+		const getEditorText = lastCtx.ui?.getEditorText;
+		if (!getEditorText) {
+			// Debug: log what's available
+			const fs = require("node:fs");
+			fs.writeFileSync("/tmp/pi-spec-poll-debug.log",
+				`ctx keys: ${Object.keys(lastCtx || {}).join(",")}\nctx.ui keys: ${Object.keys(lastCtx?.ui || {}).join(",")}\nhasUI: ${lastCtx.hasUI}\n`);
 			return;
 		}
 
-		// If text changed and speculation is running on a different prompt, kill it
-		if (activeSpecProc && pendingSpeculationPrompt && text !== pendingSpeculationPrompt) {
-			killActiveSpeculation();
-			if (ctx.hasUI) ctx.ui.setStatus("speculation", undefined);
+		const text = (getEditorText() || "").trim();
+
+		if (!text || text.startsWith("/") || text.startsWith("!") || text.length < MIN_PROMPT_LENGTH) {
+			lastSeenText = text;
+			stableCount = 0;
+			return;
 		}
 
-		// Don't re-trigger if we're already speculating on this exact text
-		if (pendingSpeculationPrompt === text) return;
-
-		// Debounce: wait 3 seconds after user stops typing
-		debounceTimer = setTimeout(() => {
-			debounceTimer = null;
-			// Double-check text is still long enough (user might have deleted)
-			if (text.length >= MIN_PROMPT_LENGTH && !text.startsWith("/") && !text.startsWith("!")) {
-				// Auto-trigger speculation using stored handler reference
-				if (speculateHandler) {
-					speculateHandler(text, ctx);
-				}
+		if (text === lastSeenText) {
+			stableCount++;
+		} else {
+			// Text changed — kill existing speculation if different
+			if (activeSpecProc && pendingSpeculationPrompt && text !== pendingSpeculationPrompt) {
+				killActiveSpeculation();
 			}
-		}, DEBOUNCE_MS);
+			lastSeenText = text;
+			stableCount = 0;
+			return;
+		}
+
+		// After 3 stable polls (3 seconds), trigger speculation
+		if (stableCount === 3 && text !== pendingSpeculationPrompt && !activeSpecProc) {
+			if (speculateHandler && lastCtx) {
+				speculateHandler(text, lastCtx);
+			}
+		}
+	}, 1000);
+
+	// Cleanup on agent end
+	pi.on("agent_end", async () => {
+		clearInterval(pollInterval);
 	});
 
 	// ─── tool_call hook: canUseTool() gating + OverlayFS redirect ───
