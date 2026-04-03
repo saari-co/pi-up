@@ -383,10 +383,12 @@ export default function speculationEngine(pi: ExtensionAPI) {
 			return;
 		}
 
-		// After 3 stable polls (3 seconds), trigger speculation
+		// After 3 stable polls (3 seconds), trigger speculation — once only
 		if (stableCount === 3 && text !== pendingSpeculationPrompt && !activeSpecProc) {
 			if (speculateHandler && lastCtx) {
 				speculateHandler(text, lastCtx);
+				// Prevent re-triggering on the same text by jumping stableCount past threshold
+				stableCount = 999;
 			}
 		}
 	}, 1000);
