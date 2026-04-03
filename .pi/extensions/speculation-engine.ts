@@ -121,11 +121,11 @@ export default function speculationEngine(pi: ExtensionAPI) {
 		if (!args) return;
 		if (process.env.PI_IS_SUBAGENT === "true" || process.env.PI_SUBAGENT_DEPTH) return;
 
-		// 🛡️ Nuclear option: ask the OS directly if any speculation subprocess exists
+		// 🛡️ Count pi processes. If more than 1 (our main session), don't spawn another.
 		try {
 			const { execSync } = require("node:child_process");
-			const existing = execSync("pgrep -f PI_SPECULATE 2>/dev/null || true", { encoding: "utf-8" }).trim();
-			if (existing) return; // Another speculation process is already running
+			const count = parseInt(execSync("pgrep -u $(whoami) -c pi 2>/dev/null || echo 0", { encoding: "utf-8" }).trim(), 10);
+			if (count >= 2) return; // Main session + something else already running
 		} catch { }
 
 		killActive();
