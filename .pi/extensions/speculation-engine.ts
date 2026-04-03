@@ -4,7 +4,7 @@ import * as path from "node:path";
 import type { ExtensionAPI } from "@mariozechner/pi-coding-agent";
 
 // ─── Constants (from Claude Code speculation.ts) ───
-const SPECULATION_TIMEOUT_MS = 90_000;		// Kill runaway speculations after 90s
+const SPECULATION_TIMEOUT_MS = 30_000;		// Kill runaway speculations after 30s
 const MAX_SPECULATION_TURNS = 20;			// Claude Code: MAX_SPECULATION_TURNS = 20
 const MAX_SPECULATION_MESSAGES = 100;		// Claude Code: MAX_SPECULATION_MESSAGES = 100
 const OVERLAY_ROOT = "/tmp/pi-speculation";
@@ -234,15 +234,18 @@ export default function speculationEngine(pi: ExtensionAPI) {
 				output += d.toString();
 			});
 
-			// 🛡️ Guardrail: 90-second absolute kill timer (Claude Code abort controller pattern)
+			// 🛡️ Guardrail: 30-second absolute kill timer
+			// Capture proc in closure so it kills THIS process, not whatever activeSpecProc points to later
+			const thisProc = proc;
 			activeKillTimer = setTimeout(() => {
-				if (activeSpecProc && !activeSpecProc.killed) {
-					activeSpecProc.kill("SIGTERM");
+				if (thisProc && !thisProc.killed) {
+					thisProc.kill("SIGTERM");
 					if (ctx.hasUI) {
-						ctx.ui.notify("Speculation timed out after 90s.", "error");
+						ctx.ui.notify("Speculation timed out after 30s.", "error");
 						ctx.ui.setStatus("speculation", undefined);
 					}
 				}
+				if (activeSpecProc === thisProc) activeSpecProc = null;
 				activeKillTimer = null;
 			}, SPECULATION_TIMEOUT_MS);
 
