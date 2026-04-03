@@ -221,6 +221,9 @@ export default function coordinatorMode(pi: ExtensionAPI) {
 		},
 	});
 
+	// ─── Register tools on session_start so refreshTools() is wired up ───
+	pi.on("session_start", async () => {
+
 	// ─── dispatch_agent tool ───
 	pi.registerTool({
 		name: "dispatch_agent",
@@ -304,6 +307,8 @@ export default function coordinatorMode(pi: ExtensionAPI) {
 			return { content: [{ type: "text", text: JSON.stringify(mailbox, null, 2) }] };
 		},
 	});
+
+	}); // end session_start
 
 	// ─── tool_call gate: block direct tools in coordinator mode ───
 	pi.on("tool_call", async (event: any) => {
