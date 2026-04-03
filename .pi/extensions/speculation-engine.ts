@@ -100,6 +100,15 @@ export default function speculationEngine(pi: ExtensionAPI) {
 	// Claim ownership of the poller — previous pollers will see this and stop
 	const myPollerId = String(process.pid) + "-" + Date.now();
 	fs.writeFileSync(POLL_OWNER_FILE, myPollerId);
+	let pollStopped = false;
+
+	// 🛡️ Pi emits session_shutdown before /reload. Clean up everything.
+	pi.on("session_shutdown" as any, async () => {
+		pollStopped = true;
+		try { fs.unlinkSync(POLL_OWNER_FILE); } catch { }
+		try { fs.unlinkSync(LOCK_FILE); } catch { }
+		killByPidFile();
+	});
 
 	const killActive = () => {
 		if (activeTimer) { clearTimeout(activeTimer); activeTimer = null; }
@@ -112,8 +121,14 @@ export default function speculationEngine(pi: ExtensionAPI) {
 		if (!args) return;
 		if (process.env.PI_IS_SUBAGENT === "true" || process.env.PI_SUBAGENT_DEPTH) return;
 
-		// 🛡️ PID-file singleton: if another speculation is running, don't spawn
-		if (getRunningSpecPid()) return;
+		// 🛡️ Atomic lock: try to create file exclusively (OS-level atomic operation)
+		// Only ONE caller can succeed. All others bail immediately.
+		try {
+			fs.writeFileSync(LOCK_FILE, "pending", { flag: "wx" });
+		} catch {
+			// Lock file exists = another speculation owns it, skip
+			return;
+		}
 
 		killActive();
 
@@ -183,7 +198,7 @@ export default function speculationEngine(pi: ExtensionAPI) {
 
 	// ─── Poller (self-terminating setTimeout chain) ───
 	function poll() {
-		// Self-terminate if another poller took ownership
+		if (pollStopped) return; // Killed by session_shutdown
 		try { if (fs.readFileSync(POLL_OWNER_FILE, "utf-8").trim() !== myPollerId) return; } catch { return; }
 
 		setTimeout(poll, 1000);
