@@ -121,14 +121,12 @@ export default function speculationEngine(pi: ExtensionAPI) {
 		if (!args) return;
 		if (process.env.PI_IS_SUBAGENT === "true" || process.env.PI_SUBAGENT_DEPTH) return;
 
-		// 🛡️ Atomic lock: try to create file exclusively (OS-level atomic operation)
-		// Only ONE caller can succeed. All others bail immediately.
+		// 🛡️ Nuclear option: ask the OS directly if any speculation subprocess exists
 		try {
-			fs.writeFileSync(LOCK_FILE, "pending", { flag: "wx" });
-		} catch {
-			// Lock file exists = another speculation owns it, skip
-			return;
-		}
+			const { execSync } = require("node:child_process");
+			const existing = execSync("pgrep -f PI_SPECULATE 2>/dev/null || true", { encoding: "utf-8" }).trim();
+			if (existing) return; // Another speculation process is already running
+		} catch { }
 
 		killActive();
 
