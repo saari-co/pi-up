@@ -331,17 +331,18 @@ export default function speculationEngine(pi: ExtensionAPI) {
 	pi.on("input", captureCtx);
 
 	// Write debug on first poll to confirm polling is alive
-	let debugWritten = false;
+	let debugCount = 0;
 
 	const pollInterval = setInterval(() => {
 		// Guards
 		if (process.env.PI_IS_SUBAGENT === "true" || process.env.PI_SPECULATE === "true") return;
 
 		const fsd = require("node:fs");
-		if (!debugWritten) {
-			fsd.writeFileSync("/tmp/pi-spec-poll-debug.log",
-				`poll alive at ${Date.now()}\nlastCtx=${!!lastCtx}\nctx keys: ${Object.keys(lastCtx || {}).join(",")}\nctx.hasUI: ${lastCtx?.hasUI}\nctx.ui keys: ${Object.keys(lastCtx?.ui || {}).join(",")}\n`);
-			debugWritten = true;
+		// Write debug every 10 polls (10 seconds) for first 30 seconds
+		if (debugCount < 3) {
+			debugCount++;
+			fsd.appendFileSync("/tmp/pi-spec-poll-debug.log",
+				`poll #${debugCount} at ${Date.now()} lastCtx=${!!lastCtx} hasUI=${lastCtx?.hasUI} uiKeys=${Object.keys(lastCtx?.ui || {}).join(",")}\n`);
 		}
 
 		if (!lastCtx) return;
