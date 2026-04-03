@@ -33,6 +33,18 @@ function killByPidFile(): void {
 	}
 }
 
+// OS-level atomic lock (prevents TOCTOU race conditions)
+function acquireSpeculationLock(): boolean {
+	// First: clean up stale locks if the process is dead
+	getRunningSpecPid(); 
+	try {
+		fs.writeFileSync(LOCK_FILE, "pending", { flag: "wx" });
+		return true;
+	} catch {
+		return false; // Another poller holds the lock
+	}
+}
+
 // ─── OverlayFS ───
 class OverlayFS {
 	readonly id: string;
@@ -121,13 +133,12 @@ export default function speculationEngine(pi: ExtensionAPI) {
 		if (!args) return;
 		if (process.env.PI_IS_SUBAGENT === "true" || process.env.PI_SUBAGENT_DEPTH) return;
 
-		// 🛡️ Count pi processes. If more than 1 (our main session), don't spawn another.
-		try {
-			const { execSync } = require("node:child_process");
-			const count = parseInt(execSync("pgrep -u $(whoami) -c pi 2>/dev/null || echo 0", { encoding: "utf-8" }).trim(), 10);
-			if (count >= 2) return; // Main session + something else already running
-		} catch { }
+		// 🛡️ Atomic lock: OS-level mutex guarantees only 1 poller succeeds
+		// We do this BEFORE killActive() so we don't delete our own lock
+		if (!acquireSpeculationLock()) return;
 
+		// We own the lock. Safe to kill old instances.
+		// (killByPidFile won't delete our 'pending' lock because it parses as NaN)
 		killActive();
 
 		const overlay = new OverlayFS();
