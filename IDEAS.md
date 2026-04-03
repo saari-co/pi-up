@@ -4,6 +4,19 @@
 
 ---
 
+## PRIORITY: tool_search Audit & Fix
+
+**Status:** BROKEN — `tool_search` reports "Activated" but extension-registered tools (dispatch_agent, read_mailbox) are never callable. Root cause: two separate tool registries (pi core vs extension) are out of sync.
+
+**Action items:**
+1. SSH into VM (`e2-small-instance` / `mom-sandbox` docker) → find `ToolSearchTool` in the claude-code repo (somewhere in `/root/` channels) → study how Claude Code implements `defer_loading` and tool activation
+2. Audit `tool-search.ts` against pi-mono source (`agent-session.js:_refreshToolRegistry`, `loader.js:registerTool`, `runner.js:bindCore`) to understand why `pi.setActiveTools()` doesn't surface extension tools
+3. Key finding so far: `_refreshToolRegistry()` skips auto-activating extension tools on first build because it receives explicit `activeToolNames: ["read","bash","edit","write"]`. Extension tools land in `_toolRegistry` but never in `activeToolNames`.
+4. Fix: either patch `tool-search.ts` to re-snapshot tools after all extensions load, or have it call `_refreshToolRegistry({ includeAllExtensionTools: true })` equivalent
+5. Also fix coordinator-mode.ts — moved registerTool into `session_start` but still not working (possible timing race with tool_search's own `session_start` + 500ms delay)
+
+---
+
 ## Tier 1: High Impact — Build Next
 
 ### 1. `/simplify` Skill — 3-Agent Parallel Code Review
