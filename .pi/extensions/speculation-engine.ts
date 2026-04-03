@@ -321,24 +321,33 @@ export default function speculationEngine(pi: ExtensionAPI) {
 	let stableCount = 0; // how many consecutive polls saw the same text
 	let lastCtx: any = null;
 
-	// Capture ctx from multiple events to get UI access
-	pi.on("agent_start", async (_event: any, ctx: any) => { lastCtx = ctx; });
-	pi.on("agent_end", async (_event: any, ctx: any) => { lastCtx = ctx; });
-	pi.on("turn_end", async (_event: any, ctx: any) => { if (ctx) lastCtx = ctx; });
+	// Capture ctx from every event to ensure we have UI access
+	const captureCtx = async (_event: any, ctx: any) => { if (ctx) lastCtx = ctx; };
+	pi.on("agent_start", captureCtx);
+	pi.on("agent_end", captureCtx);
+	pi.on("turn_end", captureCtx);
+	pi.on("tool_call", captureCtx);
+	pi.on("tool_result", captureCtx);
+	pi.on("input", captureCtx);
+
+	// Write debug on first poll to confirm polling is alive
+	let debugWritten = false;
 
 	const pollInterval = setInterval(() => {
 		// Guards
 		if (process.env.PI_IS_SUBAGENT === "true" || process.env.PI_SPECULATE === "true") return;
+
+		const fsd = require("node:fs");
+		if (!debugWritten) {
+			fsd.writeFileSync("/tmp/pi-spec-poll-debug.log",
+				`poll alive at ${Date.now()}\nlastCtx=${!!lastCtx}\nctx keys: ${Object.keys(lastCtx || {}).join(",")}\nctx.hasUI: ${lastCtx?.hasUI}\nctx.ui keys: ${Object.keys(lastCtx?.ui || {}).join(",")}\n`);
+			debugWritten = true;
+		}
+
 		if (!lastCtx) return;
 
 		const getEditorText = lastCtx.ui?.getEditorText;
-		if (!getEditorText) {
-			// Debug: log what's available
-			const fs = require("node:fs");
-			fs.writeFileSync("/tmp/pi-spec-poll-debug.log",
-				`ctx keys: ${Object.keys(lastCtx || {}).join(",")}\nctx.ui keys: ${Object.keys(lastCtx?.ui || {}).join(",")}\nhasUI: ${lastCtx.hasUI}\n`);
-			return;
-		}
+		if (!getEditorText) return;
 
 		const text = (getEditorText() || "").trim();
 
