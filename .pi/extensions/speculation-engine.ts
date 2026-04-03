@@ -23,6 +23,7 @@ const STATE_MODIFYING_PATTERNS = [
 	/\bchmod\b/, /\bchown\b/, /\bln\b/, /\bsed\s+-i/, /\bawk\b.*>/, 
 	/>>/, />[^&]/, /\bkill\b/, /\bpkill\b/, /\bnpm\b/, /\byarn\b/,
 	/\bgit\s+(add|commit|push|checkout|reset|rebase|merge|stash|branch\s+-[dD])/,
+	/\$/, /`/, // Reject variable expansion and backticks (unpredictable)
 ];
 
 // ─── State ───
@@ -118,17 +119,19 @@ function killActiveSpeculation(): void {
 }
 
 // ─── Helper: check if bash command is read-only ───
-// Claude Code uses checkReadOnlyConstraints() which checks both a prefix
-// whitelist AND a state-modification blacklist
+// Claude Code: checkReadOnlyConstraints() — prefix whitelist + state blacklist + expansion rejection
 function isReadOnlyBash(command: string): boolean {
 	const trimmed = command.trim();
 	
-	// First: reject any state-modifying patterns regardless of prefix
+	// Reject variable expansion and backticks (can't statically analyze)
+	if (trimmed.includes("$") || trimmed.includes("`")) return false;
+
+	// Reject any state-modifying patterns regardless of prefix
 	for (const pattern of STATE_MODIFYING_PATTERNS) {
 		if (pattern.test(trimmed)) return false;
 	}
 	
-	// Then: check every segment against the prefix whitelist
+	// Check every segment against the prefix whitelist
 	const segments = trimmed.split(/\s*[|&;]\s*/);
 	return segments.every(seg => {
 		const s = seg.trim();
@@ -372,10 +375,8 @@ export default function speculationEngine(pi: ExtensionAPI) {
 		}
 	}, 1000);
 
-	// Cleanup on agent end
-	pi.on("agent_end", async () => {
-		clearInterval(pollInterval);
-	});
+	// NOTE: Do NOT clearInterval on agent_end — polling must survive between turns
+	// to detect typing during idle. Only clean up on process exit.
 
 	// ─── tool_call hook: canUseTool() gating + OverlayFS redirect ───
 	// Only active when running inside a speculation subprocess (PI_SPECULATE=true)
